@@ -154,6 +154,7 @@ jobs:
         shell: pwsh
         env:
           SIMSHREDDER_E2E_ACCEPT_BASELINE: ${{ inputs.capture_gui_baselines && '1' || '0' }}
+          SIMSHREDDER_E2E_CI_BASELINE_CAPTURE: ${{ inputs.run_native && inputs.capture_gui_baselines && '1' || '0' }}
         run: pnpm e2e
       - name: Verify native Windows screenshot evidence exists
         shell: pwsh
@@ -179,6 +180,7 @@ jobs:
     runs-on: macos-26
     env:
       SIMSHREDDER_E2E_ACCEPT_BASELINE: ${{ inputs.capture_gui_baselines && '1' || '0' }}
+      SIMSHREDDER_E2E_CI_BASELINE_CAPTURE: ${{ inputs.run_native && inputs.capture_gui_baselines && '1' || '0' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:

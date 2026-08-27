@@ -79,9 +79,20 @@ for (const requiredCostBoundary of [
   "if: inputs.run_native",
   "if: inputs.run_native && inputs.capture_gui_baselines != true",
   "capture_gui_baselines requires run_native",
+  "SIMSHREDDER_E2E_CI_BASELINE_CAPTURE: ${{ inputs.run_native && inputs.capture_gui_baselines && '1' || '0' }}",
 ]) {
   if (!continuousIntegration.includes(requiredCostBoundary)) {
     throw new Error(`CI is missing the hosted-runner cost boundary: ${requiredCostBoundary}`);
+  }
+}
+const desktopE2e = await readFile("apps/desktop/config/wdio.conf.ts", "utf8");
+for (const requiredCaptureBoundary of [
+  'process.env.SIMSHREDDER_E2E_CI_BASELINE_CAPTURE === "1"',
+  "acceptBaseline && process.env.CI && !authorizedCiCapture",
+  "authorizedCiCapture && (!process.env.CI || !acceptBaseline)",
+]) {
+  if (!desktopE2e.includes(requiredCaptureBoundary)) {
+    throw new Error(`desktop E2E is missing the CI baseline capture boundary: ${requiredCaptureBoundary}`);
   }
 }
 const runtimeCatalogPublisher = await readFile(path.join(workflowDirectory, "publish-runtime-catalog.yml"), "utf8");

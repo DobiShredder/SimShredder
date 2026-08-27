@@ -9,9 +9,14 @@ const autoInstall = process.env.SIMSHREDDER_E2E_AUTO_INSTALL === "1";
 const baselineVariant = windows ? "windows-ci" : process.env.CI ? "macos-ci" : "macos-retina";
 const baselineFolder = path.resolve("tests/e2e/baseline", baselineVariant);
 const e2eWindow = { width: 1024, height: 674 };
+const acceptBaseline = process.env.SIMSHREDDER_E2E_ACCEPT_BASELINE === "1";
+const authorizedCiCapture = process.env.SIMSHREDDER_E2E_CI_BASELINE_CAPTURE === "1";
 
-if (process.env.SIMSHREDDER_E2E_ACCEPT_BASELINE === "1" && process.env.CI) {
-  throw new Error("baseline acceptance is only allowed during an intentional local review");
+if (acceptBaseline && process.env.CI && !authorizedCiCapture) {
+  throw new Error("CI baseline acceptance requires the explicit workflow capture gate");
+}
+if (authorizedCiCapture && (!process.env.CI || !acceptBaseline)) {
+  throw new Error("the CI baseline capture gate is only valid with baseline acceptance in CI");
 }
 
 function prepareLiveRuntime() {
@@ -77,7 +82,7 @@ export const config: WebdriverIO.Config = {
         baselineFolder,
         screenshotPath: path.resolve("../../target/wdio-visual"),
         formatImageName: "{tag}-{width}x{height}",
-        autoSaveBaseline: process.env.SIMSHREDDER_E2E_ACCEPT_BASELINE === "1",
+        autoSaveBaseline: acceptBaseline,
         alwaysSaveActualImage: true,
         compareOptions: { scaleImagesToSameSize: true },
       },
