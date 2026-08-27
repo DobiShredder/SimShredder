@@ -7,18 +7,18 @@
   "nav": {
     "label": "Main navigation",
     "home": "Home",
-    "import": "Import",
-    "quickSim": "Quick Sim",
-    "topGear": "Top Gear",
-    "jobs": "Jobs",
-    "results": "Results",
+    "import": "Profile",
+    "quickSim": "Character Analysis",
+    "topGear": "Gear Optimizer",
+    "jobs": "Runs",
+    "results": "Report",
     "history": "History",
     "settings": "Settings"
   },
   "home": {
     "eyebrow": "World of Warcraft Retail",
-    "title": "Simulate and compare your WoW gear.",
-    "description": "Run SimulationCraft locally to test gear, gems, enchants, and upgrades.",
+    "title": "WoW gear simulation",
+    "description": "Compare gear, gems, enchants, and upgrades with SimulationCraft.",
     "startImport": "Import a profile",
     "openSettings": "Prepare SimulationCraft",
     "recentTitle": "Recent work",
@@ -129,9 +129,9 @@
     "noActiveJobs": "No active jobs"
   },
   "importPage": {
-    "eyebrow": "Profile import",
-    "title": "Bring your character into focus.",
-    "body": "Paste a SimulationCraft AddOn export or choose a .simc file. Unsupported channels and unsafe directives are rejected before execution.",
+    "eyebrow": "Profile",
+    "title": "Character profiles",
+    "body": "Reuse a saved character or import a SimulationCraft AddOn export or .simc file.",
     "sourceLabel": "Profile source",
     "sourcePlaceholder": "Paste your SimulationCraft AddOn export or .simc text here…",
     "addon": "AddOn export",
@@ -143,9 +143,33 @@
     "errorTitle": "The profile could not be imported",
     "fileTooLarge": "Profile files are limited to 2 MiB."
   },
+  "profiles": {
+    "title": "Saved characters",
+    "body": "Reuse the last input and settings saved for each character.",
+    "empty": "No character profiles have been saved yet. Reviewing an input saves it here.",
+    "identityUnknown": "Region and realm not provided",
+    "favorite": "Add {{name}} to favorites",
+    "unfavorite": "Remove {{name}} from favorites",
+    "use": "Use saved input",
+    "reloadArmory": "Reload from Armory",
+    "restorePrevious": "Restore previous input",
+    "importTitle": "Import or update a character",
+    "errorTitle": "The character profile could not be updated",
+    "sources": {
+      "addonExport": "SimC AddOn",
+      "simcFile": ".simc file",
+      "armory": "Blizzard Armory"
+    },
+    "armoryEyebrow": "Blizzard Armory",
+    "armoryTitle": "Reload {{name}} from Armory?",
+    "armoryBody": "The saved profile input will be replaced with current Armory data. AddOn-only bag items and manual input may be cleared. Simulation history is kept, and the previous input can be restored.",
+    "armoryUnavailable": "Armory authentication and the API broker will be enabled in 1.0. The reload workflow is present but no network request is made in 0.x.",
+    "armoryConfirm": "Replace and reload",
+    "cancel": "Cancel"
+  },
   "quick": {
-    "eyebrow": "Quick Sim",
-    "title": "Review every input before the run.",
+    "eyebrow": "Character Analysis",
+    "title": "Review simulation input",
     "profile": "Profile",
     "equipment": "Equipment",
     "equipped": "{{count}} equipped",
@@ -174,18 +198,18 @@
     "generatedHelp": "This exact input is stored with the job and covered by the cache key.",
     "refresh": "Update preview",
     "refreshing": "Updating preview…",
-    "run": "Start Quick Sim",
+    "run": "Start analysis",
     "starting": "Adding to the persistent queue…",
     "threads": "{{threads}} SimC threads · {{workers}} profileset workers",
-    "errorTitle": "Quick Sim could not be prepared",
-    "importFirst": "Import and review a profile before configuring Quick Sim.",
+    "errorTitle": "Character Analysis could not be prepared",
+    "importFirst": "Import and review a profile before configuring the analysis.",
     "goImport": "Go to Import"
   },
   "topGear": {
-    "eyebrow": "Top Gear optimizer",
-    "title": "Spend every upgrade with evidence.",
+    "eyebrow": "Gear Optimizer",
+    "title": "Compare gear and upgrades",
     "body": "Compare worn and bag gear with virtual gems, enchants, and upgrades. SimShredder respects each currency reserve and verifies finalists at higher precision.",
-    "importFirst": "Import a Retail Live profile before configuring Top Gear.",
+    "importFirst": "Import a Retail Live profile before configuring Gear Optimizer.",
     "budget": "Confirmed currency budget",
     "crest": "Crests",
     "valor": "Other upgrade currency",
@@ -267,10 +291,10 @@
     "finalInput": "Final verified .simc input",
     "identity": "SimC {{simc}} · {{revision}} · WoW build {{build}} · rule {{rule}}",
     "snapshot": "Currency snapshot confirmed {{time}}",
-    "export": "Export verified Top Gear artifacts",
+    "export": "Export verified Gear Optimizer artifacts",
     "exported": "Exported {{count}} files to {{path}}",
-    "errorTitle": "Top Gear could not continue",
-    "run": "Start Top Gear",
+    "errorTitle": "Gear Optimizer could not continue",
+    "run": "Start Gear Optimizer",
     "gemAction": "Apply gems",
     "enchantAction": "Apply enchant",
     "upgradeAction": "Upgrade to rank {{rank}}",
@@ -297,8 +321,8 @@
   },
   "jobsPage": {
     "eyebrow": "Persistent queue",
-    "title": "Your run stays recoverable.",
-    "noJob": "No Quick Sim job is selected.",
+    "title": "Job status",
+    "noJob": "No Character Analysis run is selected.",
     "job": "Job #{{id}}",
     "queued": "Queued",
     "running": "Running",
@@ -316,9 +340,9 @@
     "polling": "Refreshing job state…"
   },
   "resultsPage": {
-    "eyebrow": "Quick Sim result",
+    "eyebrow": "Character Analysis result",
     "title": "{{name}} · {{spec}}",
-    "noResult": "Run a successful Quick Sim to view results.",
+    "noResult": "Complete a Character Analysis run to view its report.",
     "primary": "Mean {{metric}}",
     "error": "Mean error",
     "range": "Observed range",
@@ -372,7 +396,7 @@
     "exportError": "The verified artifacts could not be exported"
   },
   "placeholder": {
-    "title": "This workspace is ready for the next step",
-    "body": "The complete workflow will be connected here without requiring a command line."
+    "title": "Feature unavailable",
+    "body": "This screen is not available yet."
   }
 }

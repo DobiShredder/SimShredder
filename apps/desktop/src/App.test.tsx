@@ -59,6 +59,19 @@ const defaultStoragePaths = {
   defaultExports: "/Users/test/Documents/SimShredder Exports",
 } as const;
 let storagePaths = { ...defaultStoragePaths };
+let storedProfiles: Array<{
+  id: string;
+  identity: { region: string | null; realm: string | null; characterName: string };
+  displayName: string;
+  class: string;
+  specialization: string;
+  favorite: boolean;
+  inputSource: "addonExport" | "simcFile" | "armory";
+  request: ReturnType<typeof import("./quick").defaultQuickRequest>;
+  capturedAtUnixSeconds: number;
+  previousInputAvailable: boolean;
+  armoryRefresh: { available: boolean; reason: string };
+}> = [];
 
 const prepared = {
   profile: { name: "Core", class: "warrior", specialization: "fury", race: "orc", role: "attack", level: 90, equippedItems: 0, bagItems: 0, talents: [{ name: "talents", value: "CgEAAAAAAAA" }], warnings: [] },
@@ -167,6 +180,7 @@ describe("application shell", () => {
     mockOpen.mockResolvedValue(null);
     iconStatus = emptyIconStatus;
     storagePaths = { ...defaultStoragePaths };
+    storedProfiles = [];
     runtimeStatusResult = missingRuntime;
     mockInvoke.mockImplementation((command: string, arguments_: unknown) => {
       if (command === "runtime_install_latest") return Promise.resolve(readyRuntime);
@@ -186,6 +200,33 @@ describe("application shell", () => {
         storagePaths = { ...defaultStoragePaths };
         return Promise.resolve(storagePaths);
       }
+      if (command === "character_profiles") return Promise.resolve(storedProfiles);
+      if (command === "character_profile_save_import") {
+        const request = (arguments_ as { request: ReturnType<typeof import("./quick").defaultQuickRequest> }).request;
+        const profile = {
+          id: "a".repeat(32),
+          identity: { region: "kr", realm: "azshara", characterName: "Core" },
+          displayName: "Core",
+          class: "warrior",
+          specialization: "fury",
+          favorite: false,
+          inputSource: request.format,
+          request,
+          capturedAtUnixSeconds: 1_788_000_000,
+          previousInputAvailable: false,
+          armoryRefresh: { available: false, reason: "scheduled for 1.0" },
+        } as const;
+        storedProfiles = [profile];
+        return Promise.resolve(profile);
+      }
+      if (command === "character_profile_set_favorite") {
+        const request = arguments_ as { profileId: string; favorite: boolean };
+        const profile = { ...storedProfiles.find(({ id }) => id === request.profileId)!, favorite: request.favorite };
+        storedProfiles = [profile];
+        return Promise.resolve(profile);
+      }
+      if (command === "character_profile_reload_armory") return Promise.reject(new Error("Armory reload is unavailable"));
+      if (command === "character_profile_restore_previous") return Promise.resolve(storedProfiles[0]);
       if (command === "quick_recover") return Promise.resolve([]);
       if (command === "top_gear_sessions") return Promise.resolve([]);
       if (command === "top_gear_prepare") return Promise.resolve(topGearPrepared);
@@ -220,7 +261,7 @@ describe("application shell", () => {
     render(<App />);
 
     await expectNoAutomatedAccessibilityViolations();
-    await user.click(screen.getByRole("button", { name: "Import" }));
+    await user.click(screen.getByRole("button", { name: "Profile" }));
     await expectNoAutomatedAccessibilityViolations();
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await screen.findByText("1210-01 · 3487fce");
@@ -236,14 +277,14 @@ describe("application shell", () => {
     await user.tab();
     expect(screen.getByRole("button", { name: "Home" })).toHaveFocus();
     await user.tab();
-    const importNavigation = screen.getByRole("button", { name: "Import" });
+    const importNavigation = screen.getByRole("button", { name: "Profile" });
     expect(importNavigation).toHaveFocus();
-    expect(importNavigation).toHaveAttribute("aria-label", "Import");
+    expect(importNavigation).toHaveAttribute("aria-label", "Profile");
     await user.keyboard("{Enter}");
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
-      "Bring your character into focus.",
+      "Character profiles",
     );
-    expect(screen.getByRole("button", { name: "Import" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "Profile" })).toHaveAttribute("aria-current", "page");
   });
 
   it("switches locale without restarting", async () => {
@@ -251,11 +292,41 @@ describe("application shell", () => {
     render(<App />);
 
     await user.selectOptions(screen.getByRole("combobox", { name: "Language" }), "ko");
-    expect(await screen.findByRole("button", { name: "가져오기" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "프로필" })).toBeVisible();
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
-      "WoW 장비를 시뮬레이션하고 비교하세요.",
+      "WoW 장비 시뮬레이션",
     );
     expect(document.documentElement.lang).toBe("ko");
+  });
+
+  it("saves character inputs, favorites them, and disables unavailable Armory reload", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Profile" }));
+    await user.type(screen.getByRole("textbox", { name: "Profile source" }), "warrior=Core");
+    await user.click(screen.getByRole("button", { name: "Review profile" }));
+    expect(await screen.findByRole("heading", { name: "Review simulation input" })).toBeVisible();
+    expect(mockInvoke).toHaveBeenCalledWith("character_profile_save_import", {
+      request: expect.objectContaining({ source: "warrior=Core", iterations: 10_000 }),
+    });
+
+    await user.click(screen.getByRole("button", { name: "Profile" }));
+    expect(await screen.findByRole("heading", { name: "Saved characters" })).toBeVisible();
+    const favorite = screen.getByRole("button", { name: "Add Core to favorites" });
+    await user.click(favorite);
+    expect(screen.getByRole("button", { name: "Remove Core from favorites" })).toHaveAttribute("aria-pressed", "true");
+
+    const reloadArmory = screen.getByRole("button", { name: "Reload from Armory" });
+    expect(reloadArmory).toBeDisabled();
+    expect(reloadArmory).toHaveAttribute("title", expect.stringContaining("API broker will be enabled in 1.0"));
+    await user.click(reloadArmory);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(mockInvoke).not.toHaveBeenCalledWith("character_profile_reload_armory", expect.anything());
+    await expectNoAutomatedAccessibilityViolations();
+
+    await user.click(screen.getByRole("button", { name: "Use saved input" }));
+    expect(await screen.findByRole("heading", { name: "Review simulation input" })).toBeVisible();
   });
 
   it("prepares the pinned runtime from the settings screen", async () => {
@@ -284,12 +355,12 @@ describe("application shell", () => {
 
   it("checks for a SimulationCraft update only once per local day", async () => {
     const first = render(<App />);
-    await screen.findByRole("heading", { name: "Simulate and compare your WoW gear." });
+    await screen.findByRole("heading", { name: "WoW gear simulation" });
     expect(mockInvoke.mock.calls.filter(([command]) => command === "runtime_status")).toHaveLength(1);
     first.unmount();
 
     render(<App />);
-    await screen.findByRole("heading", { name: "Simulate and compare your WoW gear." });
+    await screen.findByRole("heading", { name: "WoW gear simulation" });
     expect(mockInvoke.mock.calls.filter(([command]) => command === "runtime_status")).toHaveLength(1);
   });
 
@@ -301,7 +372,7 @@ describe("application shell", () => {
     await screen.findByRole("dialog", { name: "A newer SimulationCraft build is available" });
     await user.click(screen.getByRole("button", { name: "Yes, update" }));
     expect(mockInvoke).toHaveBeenCalledWith("runtime_install_latest");
-    expect(await screen.findByRole("heading", { name: "Simulate and compare your WoW gear." })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "WoW gear simulation" })).toBeVisible();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
@@ -351,15 +422,15 @@ describe("application shell", () => {
   it("completes import, preview, persistent job, result, and raw artifact flow", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Import" }));
+    await user.click(screen.getByRole("button", { name: "Profile" }));
     await user.type(screen.getByRole("textbox", { name: "Profile source" }), "warrior=Core");
     await user.click(screen.getByRole("button", { name: "Review profile" }));
-    expect(await screen.findByRole("heading", { name: "Review every input before the run." })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Review simulation input" })).toBeVisible();
     expect(screen.getByText("Core")).toBeVisible();
     expect(screen.getByRole("button", { name: "Show details for Talent configuration" })).toBeVisible();
     expect(screen.getByRole("tooltip")).toHaveTextContent("Talent loadoutCgEAAAAAAAA");
     expect(screen.queryByRole("button", { name: "View on Wowhead" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Start Quick Sim" }));
+    await user.click(screen.getByRole("button", { name: "Start analysis" }));
     expect((await screen.findAllByText("Succeeded"))[0]).toBeVisible();
     expect(screen.getByRole("progressbar")).toHaveAccessibleName("1 of 1 batches complete");
     await expectNoAutomatedAccessibilityViolations();
@@ -380,28 +451,28 @@ describe("application shell", () => {
     expect(mockInvoke).toHaveBeenCalledWith("quick_start", expect.objectContaining({ request: expect.objectContaining({ source: "warrior=Core" }) }));
   });
 
-  it("previews a bilingual Top Gear search with virtual augmentation controls", async () => {
+  it("previews the bilingual gear optimizer with virtual augmentation controls", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Import" }));
+    await user.click(screen.getByRole("button", { name: "Profile" }));
     await user.type(screen.getByRole("textbox", { name: "Profile source" }), "warrior=Core");
     await user.click(screen.getByRole("button", { name: "Review profile" }));
-    await user.click(screen.getByRole("button", { name: "Top Gear" }));
-    expect(await screen.findByRole("heading", { name: "Spend every upgrade with evidence." })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Gear Optimizer" }));
+    expect(await screen.findByRole("heading", { name: "Compare gear and upgrades" })).toBeVisible();
     expect(await screen.findByText("Exact execution preview")).toBeVisible();
     expect(screen.getByRole("button", { name: "Add virtual variant" })).toBeEnabled();
     await expectNoAutomatedAccessibilityViolations();
   });
 
-  it("keeps adaptive Top Gear stages explicit and exports the verified result", async () => {
+  it("keeps adaptive gear-optimizer stages explicit and exports the verified result", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Import" }));
+    await user.click(screen.getByRole("button", { name: "Profile" }));
     await user.type(screen.getByRole("textbox", { name: "Profile source" }), "warrior=Core");
     await user.click(screen.getByRole("button", { name: "Review profile" }));
-    await user.click(screen.getByRole("button", { name: "Top Gear" }));
+    await user.click(screen.getByRole("button", { name: "Gear Optimizer" }));
     await screen.findByText("Exact execution preview");
-    await user.click(screen.getByRole("button", { name: "Start Top Gear" }));
+    await user.click(screen.getByRole("button", { name: "Start Gear Optimizer" }));
     expect(await screen.findByText("Broad low-precision search")).toBeVisible();
     expect(screen.getByRole("progressbar")).toHaveAccessibleName("2 of 4 planned profiles evaluated");
     await user.click(screen.getByRole("button", { name: "Continue to the next verified stage" }));
@@ -413,7 +484,7 @@ describe("application shell", () => {
     expect(screen.getByRole("combobox", { name: "Sort by" })).toBeVisible();
     expect(screen.getByRole("checkbox", { name: "Select rank 1 for comparison" })).toBeVisible();
     await expectNoAutomatedAccessibilityViolations();
-    await user.click(screen.getByRole("button", { name: "Export verified Top Gear artifacts" }));
+    await user.click(screen.getByRole("button", { name: "Export verified Gear Optimizer artifacts" }));
     expect(await screen.findByText(/Exported 5 files/)).toBeVisible();
   });
 });

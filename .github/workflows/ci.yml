@@ -197,7 +197,7 @@ jobs:
       - run: pnpm e2e:build
       - name: Run offline GUI regression
         run: pnpm e2e
-      - name: Run clean per-user SimC download, install, Quick Sim, and Top Gear flow
+      - name: Run clean per-user SimC download, install, Character Analysis, and Gear Optimizer flow
         env:
           SIMSHREDDER_E2E_AUTO_INSTALL: "1"
         run: pnpm e2e

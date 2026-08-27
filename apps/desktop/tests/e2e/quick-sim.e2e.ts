@@ -1,5 +1,5 @@
 describe("supported desktop shell", () => {
-  it("opens the real Tauri app and prepares an exact Quick Sim preview", async () => {
+  it("opens the real Tauri app and prepares an exact character-analysis preview", async () => {
     const autoInstall = process.env.SIMSHREDDER_E2E_AUTO_INSTALL === "1";
     const mode = process.env.SIMSHREDDER_E2E_SIMC || autoInstall ? "live" : "offline";
     const languageControl = await $(".topbar select");
@@ -24,12 +24,13 @@ describe("supported desktop shell", () => {
     expect(keyboardContract).toEqual([
       { tag: "A", name: "Skip to content" },
       { tag: "BUTTON", name: "Home" },
-      { tag: "BUTTON", name: "Import" },
+      { tag: "BUTTON", name: "Profile" },
     ]);
-    await (await $('button[aria-label="Import"]')).click();
-    await expect($("h1")).toHaveText("Bring your character into focus.");
+    await (await $('button[aria-label="Profile"]')).click();
+    await expect($("h1")).toHaveText("Character profiles");
     await (await $("button=Home")).click();
-    await expect($("h1")).toHaveText("Simulate and compare your WoW gear.");
+    await expect($("h1")).toHaveText("WoW gear simulation");
+    await browser.execute(() => (document.activeElement as HTMLElement | null)?.blur());
     expect(await browser.checkScreen(`home-en-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(2);
 
     await (await $("button=Settings")).click();
@@ -51,6 +52,10 @@ describe("supported desktop shell", () => {
       }, { timeout: 660_000, interval: 1_000 });
     }
     await (await $("button[aria-label*='Appearance']")).click();
+    await browser.execute(() => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    });
     expect(await browser.checkScreen(`settings-en-light-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(2);
 
     if (mode === "offline") {
@@ -91,8 +96,8 @@ describe("supported desktop shell", () => {
       expect(await browser.checkScreen(`storage-en-light-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(2);
     }
 
-    await (await $("button=Import")).click();
-    await expect($("h1")).toHaveText("Bring your character into focus.");
+    await (await $("button=Profile")).click();
+    await expect($("h1")).toHaveText("Character profiles");
     await browser.execute(() => {
       (document.activeElement as HTMLElement | null)?.blur();
       window.scrollTo({ top: 0, left: 0, behavior: "auto" });
@@ -104,7 +109,7 @@ describe("supported desktop shell", () => {
       "warrior=DesktopE2E\nlevel=90\nrace=orc\nrole=attack\nspec=fury\nclass_talents=all\nspec_talents=all\nhero_talents=1\nload_default_gear=1\nhead=,id=154029\n\n### Gear from Bags\n# Candidate Helm\n# head=,id=154029,bonus_id=100/200\n",
     );
     await (await $("button=Review profile")).click();
-    const reviewHeading = await $("h1=Review every input before the run.");
+    const reviewHeading = await $("h1=Review simulation input");
     await reviewHeading.waitForDisplayed({ timeout: 60_000 });
     await expect($("pre")).toHaveText(expect.stringContaining('warrior="DesktopE2E"'));
     await expect($("pre")).toHaveText(expect.stringContaining("iterations=10000"));
@@ -120,6 +125,14 @@ describe("supported desktop shell", () => {
     expect(talentTooltipContract).toEqual(expect.objectContaining({ focusable: true, externalAction: false }));
     expect(talentTooltipContract.text).toContain("Class talents");
     expect(talentTooltipContract.text).toContain("Hero talents");
+
+    await (await $("button=Profile")).click();
+    await expect($("h2=Saved characters")).toBeDisplayed();
+    await expect($("h3=DesktopE2E")).toBeDisplayed();
+    await expect($("button=Reload from Armory")).toBeDisabled();
+    await expect($("button=Reload from Armory")).toHaveAttribute("title", expect.stringContaining("API broker will be enabled in 1.0"));
+    await (await $("button=Use saved input")).click();
+    await expect($("h1=Review simulation input")).toBeDisplayed();
 
     if (mode === "live") {
       const numericInputs = await $$("input[type='number']");
@@ -137,14 +150,14 @@ describe("supported desktop shell", () => {
       setter?.call(select, locale);
       select.dispatchEvent(new Event("change", { bubbles: true }));
     }, "ko");
-    await expect($("h1")).toHaveText("실행 전 모든 입력을 확인하세요.");
+    await expect($("h1")).toHaveText("시뮬레이션 입력 확인");
     await browser.execute(() => (document.activeElement as HTMLElement | null)?.blur());
     expect(await browser.checkScreen(`quick-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(2);
 
     await browser.execute(() => {
       document.documentElement.style.fontSize = "200%";
     });
-    await expect($("button=빠른 심크 시작")).toBeDisplayed();
+    await expect($("button=분석 시작")).toBeDisplayed();
     const layout = await browser.execute(() => ({
       documentWidth: document.documentElement.scrollWidth,
       viewportWidth: document.documentElement.clientWidth,
@@ -157,10 +170,10 @@ describe("supported desktop shell", () => {
 
     await browser.execute(() => { document.documentElement.style.fontSize = "100%"; });
     if (mode === "live") {
-      await (await $("button=빠른 심크 시작")).click();
+      await (await $("button=분석 시작")).click();
       await browser.waitUntil(async () => {
         const diagnostic = await $(".inline-error code");
-        if (await diagnostic.isExisting()) throw new Error(`Quick Sim failed: ${await diagnostic.getText()}`);
+        if (await diagnostic.isExisting()) throw new Error(`Character Analysis failed: ${await diagnostic.getText()}`);
         const state = await $(".job-title strong");
         return await state.isExisting() && await state.getText() === "완료";
       }, { timeout: autoInstall ? 300_000 : 120_000 });
@@ -189,8 +202,8 @@ describe("supported desktop shell", () => {
       await expect($("p*=파일 5개를 내보냈습니다")).toBeDisplayed();
     }
 
-    await (await $("button=최고 장비")).click();
-    const topGearHeading = await $("h1=강화 하나까지 근거를 갖고 선택하세요.");
+    await (await $("button=장비 최적화")).click();
+    const topGearHeading = await $("h1=장비와 강화 비교");
     await topGearHeading.waitForDisplayed({ timeout: 60_000 });
     await expect($("h2=정확한 실행 미리보기")).toBeDisplayed();
     const itemTooltipContract = await browser.execute(() => {
@@ -212,12 +225,12 @@ describe("supported desktop shell", () => {
       await (await $("//label[contains(.,'최종 후보 반복 횟수')]//input")).setValue("100");
       await (await $("//label[contains(.,'고정밀 최종 후보 수')]//input")).setValue("2");
       await (await $("button=미리보기 갱신")).click();
-      const startTopGear = await $("button=최고 장비 시작");
+      const startTopGear = await $("button=장비 최적화 시작");
       await startTopGear.waitForEnabled({ timeout: 20_000 });
       await startTopGear.click();
       await browser.waitUntil(async () => {
         const diagnostic = await $(".inline-error code");
-        if (await diagnostic.isExisting()) throw new Error(`Top Gear start failed: ${await diagnostic.getText()}`);
+        if (await diagnostic.isExisting()) throw new Error(`Gear Optimizer start failed: ${await diagnostic.getText()}`);
         return await $(".job-card").isExisting();
       }, { timeout: 90_000 });
       const continueStage = await $("button=다음 검증 단계 계속");
@@ -227,7 +240,7 @@ describe("supported desktop shell", () => {
       await browser.waitUntil(async () => {
         const stage = await $(".job-title strong").getText();
         const diagnostic = await $(".inline-error code");
-        if (await diagnostic.isExisting()) throw new Error(`Top Gear advance failed: ${await diagnostic.getText()}`);
+        if (await diagnostic.isExisting()) throw new Error(`Gear Optimizer advance failed: ${await diagnostic.getText()}`);
         return stage === "고정밀 최종 후보 검증";
       }, { timeout: 90_000 });
       const finalizeStage = await $("button=다음 검증 단계 계속");
@@ -237,7 +250,7 @@ describe("supported desktop shell", () => {
       const finalInput = await $("h2=최종 검증 .simc 입력");
       await finalInput.waitForDisplayed({ timeout: autoInstall ? 300_000 : 180_000 });
       await expect($("h2=검증된 장비 조합 순위")).toBeDisplayed();
-      await (await $("button=검증된 최고 장비 산출물 내보내기")).click();
+      await (await $("button=검증된 장비 최적화 산출물 내보내기")).click();
       await expect($("p*=파일 5개를 내보냈습니다")).toBeDisplayed();
     }
   });

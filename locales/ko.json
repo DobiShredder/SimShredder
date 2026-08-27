@@ -7,18 +7,18 @@
   "nav": {
     "label": "주요 탐색",
     "home": "홈",
-    "import": "가져오기",
-    "quickSim": "빠른 심크",
-    "topGear": "최고 장비",
-    "jobs": "작업",
-    "results": "결과",
+    "import": "프로필",
+    "quickSim": "캐릭터 분석",
+    "topGear": "장비 최적화",
+    "jobs": "실행",
+    "results": "분석 결과",
     "history": "기록",
     "settings": "설정"
   },
   "home": {
     "eyebrow": "월드 오브 워크래프트 Retail",
-    "title": "WoW 장비를 시뮬레이션하고 비교하세요.",
-    "description": "SimulationCraft를 로컬에서 실행해 장비, 보석, 마법부여와 업그레이드를 테스트하세요.",
+    "title": "WoW 장비 시뮬레이션",
+    "description": "장비, 보석, 마법부여와 업그레이드를 SimulationCraft로 비교합니다.",
     "startImport": "프로필 가져오기",
     "openSettings": "SimulationCraft 준비",
     "recentTitle": "최근 작업",
@@ -129,9 +129,9 @@
     "noActiveJobs": "실행 중인 작업 없음"
   },
   "importPage": {
-    "eyebrow": "프로필 가져오기",
-    "title": "캐릭터 정보를 명확하게 가져오세요.",
-    "body": "SimulationCraft AddOn 내보내기 문자열을 붙여넣거나 .simc 파일을 선택하세요. 지원하지 않는 채널과 위험한 지시문은 실행 전에 거부됩니다.",
+    "eyebrow": "프로필",
+    "title": "캐릭터 프로필",
+    "body": "저장된 캐릭터를 다시 사용하거나 SimulationCraft AddOn 내보내기 문자열 또는 .simc 파일을 가져올 수 있습니다.",
     "sourceLabel": "프로필 원본",
     "sourcePlaceholder": "SimulationCraft AddOn 내보내기 또는 .simc 내용을 붙여넣으세요…",
     "addon": "AddOn 내보내기",
@@ -143,9 +143,33 @@
     "errorTitle": "프로필을 가져오지 못했습니다",
     "fileTooLarge": "프로필 파일은 2 MiB 이하여야 합니다."
   },
+  "profiles": {
+    "title": "저장된 캐릭터",
+    "body": "캐릭터별로 마지막에 사용한 입력과 설정을 다시 사용할 수 있습니다.",
+    "empty": "저장된 캐릭터 프로필이 없습니다. 입력을 검토하면 여기에 저장됩니다.",
+    "identityUnknown": "지역과 서버 정보 없음",
+    "favorite": "{{name}} 즐겨찾기에 추가",
+    "unfavorite": "{{name}} 즐겨찾기에서 제거",
+    "use": "저장된 입력 사용",
+    "reloadArmory": "전투정보실에서 다시 불러오기",
+    "restorePrevious": "이전 입력 복원",
+    "importTitle": "캐릭터 가져오기 또는 갱신",
+    "errorTitle": "캐릭터 프로필을 갱신하지 못했습니다",
+    "sources": {
+      "addonExport": "SimC AddOn",
+      "simcFile": ".simc 파일",
+      "armory": "Blizzard 전투정보실"
+    },
+    "armoryEyebrow": "Blizzard 전투정보실",
+    "armoryTitle": "{{name}} 프로필을 전투정보실에서 다시 불러올까요?",
+    "armoryBody": "저장된 프로필 입력을 현재 전투정보실 정보로 교체합니다. AddOn에서만 가져온 가방 장비와 수동 입력은 초기화될 수 있습니다. 기존 분석 기록은 유지되며 직전 입력을 복원할 수 있습니다.",
+    "armoryUnavailable": "전투정보실 인증과 API 중계 서버는 1.0에서 활성화합니다. 0.x에는 다시 불러오기 흐름만 있으며 네트워크 요청을 보내지 않습니다.",
+    "armoryConfirm": "교체하고 다시 불러오기",
+    "cancel": "취소"
+  },
   "quick": {
-    "eyebrow": "빠른 심크",
-    "title": "실행 전 모든 입력을 확인하세요.",
+    "eyebrow": "캐릭터 분석",
+    "title": "시뮬레이션 입력 확인",
     "profile": "프로필",
     "equipment": "장비",
     "equipped": "착용 {{count}}개",
@@ -174,18 +198,18 @@
     "generatedHelp": "이 입력 그대로 작업에 저장되며 exact cache key에 포함됩니다.",
     "refresh": "미리보기 갱신",
     "refreshing": "미리보기를 갱신하는 중…",
-    "run": "빠른 심크 시작",
+    "run": "분석 시작",
     "starting": "영속 대기열에 추가하는 중…",
     "threads": "SimC thread {{threads}}개 · profileset worker {{workers}}개",
-    "errorTitle": "빠른 심크를 준비하지 못했습니다",
-    "importFirst": "빠른 심크를 설정하기 전에 프로필을 가져와 검토하세요.",
+    "errorTitle": "캐릭터 분석을 준비하지 못했습니다",
+    "importFirst": "분석을 설정하기 전에 프로필을 가져와 검토하세요.",
     "goImport": "가져오기로 이동"
   },
   "topGear": {
-    "eyebrow": "최고 장비 최적화",
-    "title": "강화 하나까지 근거를 갖고 선택하세요.",
+    "eyebrow": "장비 최적화",
+    "title": "장비와 강화 비교",
     "body": "착용 장비와 가방 장비에 가상 보석, 마법부여와 강화를 함께 비교합니다. 화폐별 비축량을 지키고 최종 후보는 높은 정밀도로 다시 검증합니다.",
-    "importFirst": "최고 장비를 설정하기 전에 Retail Live 프로필을 가져오세요.",
+    "importFirst": "장비 최적화를 설정하기 전에 Retail Live 프로필을 가져오세요.",
     "budget": "확인한 강화 화폐 예산",
     "crest": "문장",
     "valor": "기타 강화 화폐",
@@ -267,10 +291,10 @@
     "finalInput": "최종 검증 .simc 입력",
     "identity": "SimC {{simc}} · {{revision}} · WoW 빌드 {{build}} · 규칙 {{rule}}",
     "snapshot": "강화 화폐 확인 시각: {{time}}",
-    "export": "검증된 최고 장비 산출물 내보내기",
+    "export": "검증된 장비 최적화 산출물 내보내기",
     "exported": "{{path}}에 파일 {{count}}개를 내보냈습니다",
-    "errorTitle": "최고 장비 작업을 계속할 수 없습니다",
-    "run": "최고 장비 시작",
+    "errorTitle": "장비 최적화를 계속할 수 없습니다",
+    "run": "장비 최적화 시작",
     "gemAction": "보석 적용",
     "enchantAction": "마법부여 적용",
     "upgradeAction": "{{rank}}단계로 강화",
@@ -297,8 +321,8 @@
   },
   "jobsPage": {
     "eyebrow": "영속 대기열",
-    "title": "실행 상태를 잃지 않습니다.",
-    "noJob": "선택된 빠른 심크 작업이 없습니다.",
+    "title": "작업 실행 상태",
+    "noJob": "선택된 캐릭터 분석 작업이 없습니다.",
     "job": "작업 #{{id}}",
     "queued": "대기 중",
     "running": "실행 중",
@@ -316,9 +340,9 @@
     "polling": "작업 상태를 갱신하는 중…"
   },
   "resultsPage": {
-    "eyebrow": "빠른 심크 결과",
+    "eyebrow": "캐릭터 분석 결과",
     "title": "{{name}} · {{spec}}",
-    "noResult": "빠른 심크를 성공적으로 실행하면 결과를 확인할 수 있습니다.",
+    "noResult": "캐릭터 분석을 완료하면 결과를 확인할 수 있습니다.",
     "primary": "평균 {{metric}}",
     "error": "평균 오차",
     "range": "관측 범위",
@@ -372,7 +396,7 @@
     "exportError": "검증된 산출물을 내보내지 못했습니다"
   },
   "placeholder": {
-    "title": "다음 기능을 연결할 준비가 되었습니다",
-    "body": "명령줄을 사용하지 않아도 전체 흐름을 마칠 수 있도록 이 화면에 기능을 연결합니다."
+    "title": "기능 준비 중",
+    "body": "이 화면은 아직 사용할 수 없습니다."
   }
 }

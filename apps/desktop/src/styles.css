@@ -83,7 +83,7 @@ h1 { margin: 0; max-width: 14ch; font-size: clamp(2.2rem, 5vw, 4.8rem); line-hei
 .card p { margin: .4rem 0; line-height: 1.5; }
 .status-warning { display: flex; align-items: center; gap: .5rem; font-weight: 680; }
 .status-warning span { width: .48rem; height: .48rem; border-radius: 50%; background: var(--warning); }
-.text-button { border: 0; padding: .5rem 0 0; background: transparent; color: var(--accent-strong); font-weight: 680; cursor: pointer; }
+.text-button { border: 0; padding: .5rem 0 0; background: transparent; color: var(--accent-strong); font-weight: 680; cursor: pointer; display: inline-flex; align-items: center; gap: .35rem; }
 .recent-section { margin-top: 2.6rem; }
 .section-heading h2 { font-size: 1rem; }
 .empty-state { min-height: 8rem; border: 1px dashed var(--border); border-radius: .8rem; display: flex; align-items: center; justify-content: center; gap: 1rem; color: var(--muted); }
@@ -125,6 +125,23 @@ h1 { margin: 0; max-width: 14ch; font-size: clamp(2.2rem, 5vw, 4.8rem); line-hei
 .current-label { color: var(--accent-strong); font-size: .78rem; font-weight: 720; }
 .source-note { margin-top: 2rem; color: var(--muted); font-size: .78rem; }
 .import-page h1, .quick-page h1, .jobs-page h1, .results-page h1, .top-gear-page h1 { font-size: clamp(2rem, 5vw, 4rem); max-width: 17ch; }
+.saved-profiles { margin: 2rem 0 2.5rem; }
+.saved-profiles .section-heading { display: flex; justify-content: space-between; align-items: end; gap: 1rem; }
+.saved-profiles .section-heading h2, .import-heading h2 { margin: 0; font-size: 1.05rem; }
+.saved-profiles .section-heading p { margin: .4rem 0 0; color: var(--muted); font-size: .84rem; }
+.profile-card-grid { margin-top: 1rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 1rem; }
+.profile-card { border: 1px solid var(--border); border-radius: .8rem; background: var(--panel); padding: 1rem; min-width: 0; }
+.profile-card-heading { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .7rem; }
+.profile-card-heading h3, .profile-card-heading p { margin: 0; overflow-wrap: anywhere; }
+.profile-card-heading h3 { font-size: 1rem; }
+.profile-card-heading p, .profile-meta { color: var(--muted); font-size: .78rem; }
+.profile-favorite { width: 2.25rem; height: 2.25rem; color: var(--accent-strong); }
+.profile-meta { margin: .8rem 0 0; }
+.profile-actions { margin-top: 1rem; display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.profile-actions .primary-button, .profile-actions .secondary-button { padding: .55rem .7rem; font-size: .8rem; }
+.profile-empty { border: 1px dashed var(--border); border-radius: .8rem; padding: 1.2rem; color: var(--muted); }
+.import-heading { margin-top: 2rem; }
+.inline-notice { border-left: 3px solid var(--warning); padding: .7rem .9rem; background: color-mix(in srgb, var(--warning) 8%, transparent); }
 .format-choice, .settings-form fieldset { border: 0; padding: 0; margin: 2rem 0 1rem; display: flex; flex-wrap: wrap; gap: .65rem; }
 .format-choice legend, .settings-form legend { width: 100%; color: var(--muted); font-size: .78rem; margin-bottom: .4rem; }
 .format-choice label, .radio-line { display: flex; align-items: center; gap: .45rem; border: 1px solid var(--border); border-radius: .55rem; padding: .55rem .75rem; cursor: pointer; }

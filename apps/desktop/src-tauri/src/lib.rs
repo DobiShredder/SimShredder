@@ -8,8 +8,8 @@ use std::{
 use serde::Serialize;
 use simc_adapter::RuntimeManifest;
 use simshredder_desktop_service::{
-    DesktopService, ExportView, JobView, PreparedQuickSim, PreparedTopGear, QuickResultView,
-    QuickSimRequest, TopGearRequest, TopGearResultView, TopGearSessionView,
+    CharacterProfileView, DesktopService, ExportView, JobView, PreparedQuickSim, PreparedTopGear,
+    QuickResultView, QuickSimRequest, TopGearRequest, TopGearResultView, TopGearSessionView,
 };
 use simshredder_icon_cache::{CacheStatus, IconCache, read_validated_raster};
 use simshredder_job_runner::CancellationToken;
@@ -439,6 +439,74 @@ async fn quick_prepare(
 }
 
 #[tauri::command]
+async fn character_profiles(app: tauri::AppHandle) -> Result<Vec<CharacterProfileView>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        desktop_service(&app)?
+            .character_profiles()
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("character profile list task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn character_profile_save_import(
+    app: tauri::AppHandle,
+    request: QuickSimRequest,
+) -> Result<CharacterProfileView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        desktop_service(&app)?
+            .save_character_profile_import(&request)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("character profile save task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn character_profile_set_favorite(
+    app: tauri::AppHandle,
+    profile_id: String,
+    favorite: bool,
+) -> Result<CharacterProfileView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        desktop_service(&app)?
+            .set_character_profile_favorite(&profile_id, favorite)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("character profile favorite task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn character_profile_reload_armory(
+    app: tauri::AppHandle,
+    profile_id: String,
+) -> Result<CharacterProfileView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        desktop_service(&app)?
+            .reload_character_profile_from_armory(&profile_id)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Armory reload task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn character_profile_restore_previous(
+    app: tauri::AppHandle,
+    profile_id: String,
+) -> Result<CharacterProfileView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        desktop_service(&app)?
+            .restore_previous_character_profile_input(&profile_id)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("character profile restore task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn quick_start(app: tauri::AppHandle, request: QuickSimRequest) -> Result<JobView, String> {
     let worker_app = app.clone();
     let (service, job_id, token) = tauri::async_runtime::spawn_blocking(move || {
@@ -447,6 +515,9 @@ async fn quick_start(app: tauri::AppHandle, request: QuickSimRequest) -> Result<
             .doctor_active()
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "SimulationCraft is not installed".to_owned())?;
+        service
+            .save_character_profile_import(&request)
+            .map_err(|error| error.to_string())?;
         let (job_id, token) = service
             .enqueue(&request, &runtime)
             .map_err(|error| error.to_string())?;
@@ -759,6 +830,11 @@ pub fn run() {
             icon_cache_status,
             icon_cache_clear,
             open_wowhead_reference,
+            character_profiles,
+            character_profile_save_import,
+            character_profile_set_favorite,
+            character_profile_reload_armory,
+            character_profile_restore_previous,
             quick_prepare,
             quick_start,
             quick_job_status,

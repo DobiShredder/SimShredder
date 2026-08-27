@@ -4074,8 +4074,10 @@ dependencies = [
 name = "simshredder-desktop-service"
 version = "0.1.0"
 dependencies = [
+ "atomic-write-file",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "simc-adapter",
  "simshredder-core",
  "simshredder-domain",

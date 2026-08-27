@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const localeDirectory = fileURLToPath(
-  new URL("../../apps/desktop/src/locales/", import.meta.url),
+  new URL("../../locales/", import.meta.url),
 );
 const localeNames = ["en", "ko"];
 

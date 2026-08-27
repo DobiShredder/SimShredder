@@ -1,7 +1,11 @@
 //! Typed application boundary between the privileged desktop backend and the WebView.
 
+mod profiles;
 mod top_gear;
 
+pub use profiles::{
+    ArmoryRefreshStatus, CharacterProfileView, DisabledArmoryProvider, ProfileInputSource,
+};
 pub use top_gear::{
     PreparedTopGear, StartedTopGear, TopGearRequest, TopGearResultView, TopGearSessionView,
 };
@@ -42,6 +46,10 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("Top Gear failed: {0}")]
     TopGear(#[from] simshredder_top_gear::Error),
+    #[error("character profile failed: {0}")]
+    CharacterProfile(String),
+    #[error("Armory reload is unavailable: {0}")]
+    ArmoryUnavailable(String),
     #[error("job {0} has no verified successful artifact")]
     ResultUnavailable(i64),
 }
@@ -158,6 +166,7 @@ pub struct ExportView {
 pub struct DesktopService {
     database_path: PathBuf,
     run_root: PathBuf,
+    profile_catalog_path: PathBuf,
 }
 
 impl DesktopService {
@@ -167,6 +176,7 @@ impl DesktopService {
         let service = Self {
             database_path: root.join("jobs.sqlite3"),
             run_root: root.join("runs"),
+            profile_catalog_path: root.join("character-profiles.json"),
         };
         let _ = service.queue()?;
         Ok(service)
