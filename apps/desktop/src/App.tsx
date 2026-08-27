@@ -17,7 +17,7 @@ import { useCallback, useEffect, useState, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import type { SupportedLocale } from "./i18n";
 import { quickJobStatus, quickRecover, type JobView, type PreparedQuickSim, type QuickResultView, type QuickSimRequest } from "./quick";
-import { runtimeInstallLatest, runtimeStatus, type RuntimeView } from "./runtime";
+import { formatRuntimeDataDate, runtimeCheckUpdates, runtimeInstallLatest, runtimeStatus, type RuntimeView } from "./runtime";
 import { ImportPage } from "./screens/ImportPage";
 import { JobsPage } from "./screens/JobsPage";
 import { QuickSimPage } from "./screens/QuickSimPage";
@@ -63,6 +63,7 @@ export function App() {
   const [job, setJob] = useState<JobView | null>(null);
   const [result, setResult] = useState<QuickResultView | null>(null);
   const [topGearSession, setTopGearSession] = useState<TopGearSessionView | null>(null);
+  const [runtime, setRuntime] = useState<RuntimeView | null>(null);
   const [runtimeUpdate, setRuntimeUpdate] = useState<RuntimeView | null>(null);
   const [runtimeUpdateBusy, setRuntimeUpdateBusy] = useState(false);
   const [runtimeUpdateError, setRuntimeUpdateError] = useState<string | null>(null);
@@ -84,6 +85,10 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    void runtimeStatus().then(setRuntime).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
     const today = localDateKey();
     try {
       if (window.localStorage.getItem(RUNTIME_UPDATE_CHECK_DATE_KEY) === today) return;
@@ -91,9 +96,10 @@ export function App() {
     } catch {
       // A disabled WebView storage layer must not prevent the update check.
     }
-    void runtimeStatus().then((runtime) => {
-      if (runtime.state === "ready" && runtime.active && runtime.updateAvailable) {
-        setRuntimeUpdate(runtime);
+    void runtimeCheckUpdates().then((nextRuntime) => {
+      setRuntime(nextRuntime);
+      if (nextRuntime.state === "ready" && nextRuntime.active && nextRuntime.updateAvailable) {
+        setRuntimeUpdate(nextRuntime);
       }
     }).catch(() => undefined);
   }, []);
@@ -108,7 +114,7 @@ export function App() {
     setRuntimeUpdateBusy(true);
     setRuntimeUpdateError(null);
     try {
-      await runtimeInstallLatest();
+      setRuntime(await runtimeInstallLatest());
       setRuntimeUpdate(null);
     } catch (reason) {
       setRuntimeUpdateError(String(reason));
@@ -184,7 +190,7 @@ export function App() {
 
         <main id="main-content" tabIndex={-1}>
           {page === "home" ? (
-            <HomePage navigate={setPage} />
+            <HomePage navigate={setPage} runtime={runtime} />
           ) : page === "import" ? (
             <ImportPage onPrepared={(request, prepared) => { setQuickRequest(request); setPreview(prepared); setPage("quickSim"); }} />
           ) : page === "quickSim" ? (
@@ -196,7 +202,7 @@ export function App() {
           ) : page === "results" ? (
             <ResultsPage result={result} />
           ) : page === "settings" ? (
-            <SettingsPage />
+            <SettingsPage initialRuntime={runtime} onRuntimeChange={setRuntime} />
           ) : (
             <PlaceholderPage page={page} />
           )}
@@ -232,8 +238,27 @@ export function App() {
   );
 }
 
-function HomePage({ navigate }: { navigate: (page: Page) => void }) {
-  const { t } = useTranslation();
+function HomePage({ navigate, runtime }: { navigate: (page: Page) => void; runtime: RuntimeView | null }) {
+  const { t, i18n } = useTranslation();
+  const dataDate = formatRuntimeDataDate(runtime?.activeDataDate ?? null, i18n.resolvedLanguage ?? "en");
+  const runtimeLabel = runtime === null
+    ? t("runtime.checking")
+    : runtime.state === "ready"
+      ? t("runtime.ready")
+      : runtime.state === "damaged"
+        ? t("runtime.damaged")
+        : t("runtime.missing");
+  const runtimeDetail = runtime?.state === "ready" && runtime.active
+    ? t("runtime.readyDetail", {
+        version: runtime.active.simcVersion,
+        build: runtime.active.build,
+        date: dataDate ?? t("runtime.unknownDate"),
+      })
+    : runtime?.state === "damaged"
+      ? t("runtime.damagedDetail")
+      : runtime === null
+        ? t("runtime.checkingDetail")
+        : t("runtime.missingDetail");
   return (
     <div className="page home-page">
       <section className="hero-panel">
@@ -263,8 +288,8 @@ function HomePage({ navigate }: { navigate: (page: Page) => void }) {
             <div className="card-icon"><Gauge aria-hidden="true" size={19} /></div>
             <h2>{t("runtime.title")}</h2>
           </div>
-          <p className="status-warning"><span aria-hidden="true" />{t("runtime.missing")}</p>
-          <p className="muted">{t("runtime.missingDetail")}</p>
+          <p className={`runtime-home-status runtime-home-${runtime?.state ?? "checking"}`}><span aria-hidden="true" />{runtimeLabel}</p>
+          <p className="muted">{runtimeDetail}</p>
           <button className="text-button" type="button" onClick={() => navigate("settings")}>
             {t("runtime.action")} <span aria-hidden="true">→</span>
           </button>

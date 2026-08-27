@@ -7,7 +7,7 @@ export type GearSlot =
   | "trinket1" | "trinket2" | "main_hand" | "off_hand";
 
 export type CostVector = Record<string, number>;
-export type ChangeKind = "equip" | "gem" | "enchant" | "upgrade";
+export type ChangeKind = "equip" | "gem" | "enchant" | "upgrade" | "catalyst";
 export type WeaponKind = "none" | "one_hand" | "two_hand" | "off_hand";
 
 export type UpgradeAction = {
@@ -27,6 +27,7 @@ export type ItemVariant = {
   key: string;
   sourceItemId: number;
   slot: GearSlot;
+  displayName: string | null;
   rank: number;
   gemIds: number[];
   enchantId: number | null;
@@ -34,21 +35,43 @@ export type ItemVariant = {
   cost: CostVector;
   actions: UpgradeAction[];
   uniqueGroups: string[];
+  setGroups: string[];
   weaponKind: WeaponKind;
   embellishment: boolean;
+  catalyst: boolean;
+  enabled: boolean;
   changed: boolean;
 };
+
+export type TalentVariant = {
+  key: string;
+  label: string;
+  option: string;
+  value: string;
+  changed: boolean;
+  enabled: boolean;
+};
+
+export type ProfileOptionVariant = TalentVariant;
 
 export type Loadout = {
   key: string;
   items: Partial<Record<GearSlot, ItemVariant>>;
   cost: CostVector;
   changedSlots: number;
+  changedOptions: number;
+  talent: TalentVariant;
+  profileOptions: Record<string, ProfileOptionVariant>;
 };
 
 export type TopGearRequest = {
   quick: QuickSimRequest;
   variants: ItemVariant[];
+  talentLoadouts: TalentVariant[];
+  profileOptions: Record<string, ProfileOptionVariant[]>;
+  lockedSlots: GearSlot[];
+  minimumSetPieces: Record<string, number>;
+  catalystCharges: number;
   balances: CostVector;
   reserves: CostVector;
   currencyConfirmedAtUnixSeconds: number;
@@ -78,9 +101,13 @@ export type PreparedTopGear = {
     weaponConstraint: number;
     budget: number;
     symmetricDuplicate: number;
+    minimumSetBonus: number;
+    catalystLimit: number;
   };
   generatedInput: string;
   variants: ItemVariant[];
+  talentLoadouts: TalentVariant[];
+  profileOptions: Record<string, ProfileOptionVariant[]>;
   loadouts: Loadout[];
 };
 
@@ -142,8 +169,13 @@ export function defaultTopGearRequest(quick: QuickSimRequest): TopGearRequest {
   return {
     quick,
     variants: [],
-    balances: { crest: 0, valor: 0 },
-    reserves: { crest: 0, valor: 0 },
+    talentLoadouts: [],
+    profileOptions: {},
+    lockedSlots: [],
+    minimumSetPieces: {},
+    catalystCharges: 0,
+    balances: { champion_mistcrest: 0, hero_mistcrest: 0, myth_mistcrest: 0, spark_of_tides: 0 },
+    reserves: { champion_mistcrest: 0, hero_mistcrest: 0, myth_mistcrest: 0, spark_of_tides: 0 },
     currencyConfirmedAtUnixSeconds: Math.floor(Date.now() / 1000),
     ruleRevision: "12.1.0-69465-v1",
     gameBuild: 69465,

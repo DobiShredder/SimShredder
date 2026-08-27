@@ -5,12 +5,13 @@
       {
         "item": {
           "id": 154029,
+          "name": "Candidate Helm",
           "options": {
             "bonus_id": "100/200"
           },
           "slot": "head"
         },
-        "name": "Candidate Helm (265)"
+        "name": "Candidate Helm"
       }
     ],
     "channel": "retail_live",

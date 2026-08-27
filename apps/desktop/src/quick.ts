@@ -2,6 +2,51 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type SourceFormat = "addonExport" | "simcFile";
 export type CpuChoice = "efficient" | "balanced" | "maximum";
+export type PrecisionChoice = "smart" | "fixed";
+
+export type AnalysisOptions = {
+  precision: PrecisionChoice;
+  targetError: number;
+  targetLevel: number;
+  targetRace: "humanoid" | "aberration" | "beast" | "demon" | "dragonkin" | "elemental" | "giant" | "mechanical" | "undead" | "not_specified";
+  worldLagMs: number;
+  worldLagStddevMs: number;
+  playerSkill: number;
+  seed: number;
+  optimalRaid: boolean;
+  bloodlust: boolean;
+  bloodlustTime: number;
+  bloodlustPercent: number;
+  consumables: boolean;
+  raidBuffs: {
+    arcaneIntellect: boolean;
+    battleShout: boolean;
+    markOfTheWild: boolean;
+    powerWordFortitude: boolean;
+    chaosBrand: boolean;
+    mysticTouch: boolean;
+    windfuryTotem: boolean;
+    huntersMark: boolean;
+    bleeding: boolean;
+  };
+  consumableOptions: {
+    flask: boolean;
+    food: boolean;
+    augmentation: boolean;
+    potion: boolean;
+    temporaryEnchant: boolean;
+  };
+  reportDetails: boolean;
+  reportPetsSeparately: boolean;
+  customApl: string;
+  customOptions: string;
+};
+
+export function detectSourceFormat(source: string): SourceFormat {
+  const hasAddonHeader = /^# SimC Addon \S+\s*$/m.test(source);
+  const hasRetailHeader = /^# WoW \d+(?:\.\d+){2}\.\d+, TOC \d+\s*$/m.test(source);
+  return hasAddonHeader && hasRetailHeader ? "addonExport" : "simcFile";
+}
 
 export type QuickSimRequest = {
   source: string;
@@ -11,8 +56,9 @@ export type QuickSimRequest = {
   maxTimeSeconds: number;
   varyCombatLength: number;
   desiredTargets: number;
-  fightStyle: "Patchwerk" | "DungeonSlice" | "HecticAddCleave" | "LightMovement";
+  fightStyle: "Patchwerk" | "CastingPatchwerk" | "DungeonSlice" | "HecticAddCleave" | "LightMovement" | "HeavyMovement" | "HelterSkelter" | "CleaveAdd" | "Beastlord";
   cpuPreset: CpuChoice;
+  analysis: AnalysisOptions;
 };
 
 export type ProfileSummary = {
@@ -148,7 +194,7 @@ export type QuickResultView = {
 
 export type ExportView = { directory: string; fileCount: number };
 
-export const defaultQuickRequest = (source = "", format: SourceFormat = "addonExport"): QuickSimRequest => ({
+export const defaultQuickRequest = (source = "", format: SourceFormat = detectSourceFormat(source)): QuickSimRequest => ({
   source,
   format,
   iterations: 10_000,
@@ -158,6 +204,43 @@ export const defaultQuickRequest = (source = "", format: SourceFormat = "addonEx
   desiredTargets: 1,
   fightStyle: "Patchwerk",
   cpuPreset: "balanced",
+  analysis: {
+    precision: "fixed",
+    targetError: 0.2,
+    targetLevel: 93,
+    targetRace: "humanoid",
+    worldLagMs: 50,
+    worldLagStddevMs: 5,
+    playerSkill: 1,
+    seed: 1,
+    optimalRaid: true,
+    bloodlust: true,
+    bloodlustTime: 0,
+    bloodlustPercent: 0,
+    consumables: true,
+    raidBuffs: {
+      arcaneIntellect: true,
+      battleShout: true,
+      markOfTheWild: true,
+      powerWordFortitude: true,
+      chaosBrand: true,
+      mysticTouch: true,
+      windfuryTotem: true,
+      huntersMark: true,
+      bleeding: true,
+    },
+    consumableOptions: {
+      flask: true,
+      food: true,
+      augmentation: true,
+      potion: true,
+      temporaryEnchant: true,
+    },
+    reportDetails: true,
+    reportPetsSeparately: false,
+    customApl: "",
+    customOptions: "",
+  },
 });
 
 export function quickPrepare(request: QuickSimRequest): Promise<PreparedQuickSim> {

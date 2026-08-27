@@ -4,7 +4,7 @@
   "game_build": 69465,
   "game_version": "12.1.0",
   "source": "Manual input contract. Costs, discounts, and balances require explicit user confirmation.",
-  "currency_ids": ["crest", "valor"],
+  "currency_ids": ["crest", "valor", "champion_mistcrest", "hero_mistcrest", "myth_mistcrest", "spark_of_tides"],
   "max_embellishments": 2,
   "max_sockets_per_item": 3,
   "allowed_enchant_slots": [

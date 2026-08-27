@@ -19,7 +19,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use simc_adapter::verify_artifact_directory;
 use simshredder_core::{InputFormat, PreparedRun};
-use simshredder_domain::{NormalizedQuickResult, Role};
+use simshredder_domain::{ActionDirective, NormalizedQuickResult, Role};
 use simshredder_job_runner::{
     CancellationToken, CpuPreset, DispatchResult, PersistentQueue, apply_cpu_preset,
 };
@@ -71,6 +71,116 @@ pub enum CpuChoice {
     Maximum,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PrecisionChoice {
+    Smart,
+    #[default]
+    Fixed,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct AnalysisOptions {
+    pub precision: PrecisionChoice,
+    pub target_error: f64,
+    pub target_level: u16,
+    pub target_race: String,
+    pub world_lag_ms: u16,
+    pub world_lag_stddev_ms: u16,
+    pub player_skill: f64,
+    pub seed: u64,
+    pub optimal_raid: bool,
+    pub bloodlust: bool,
+    pub bloodlust_time: i32,
+    pub bloodlust_percent: u8,
+    pub consumables: bool,
+    pub raid_buffs: RaidBuffOptions,
+    pub consumable_options: ConsumableOptions,
+    pub report_details: bool,
+    pub report_pets_separately: bool,
+    pub custom_apl: String,
+    pub custom_options: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct RaidBuffOptions {
+    pub arcane_intellect: bool,
+    pub battle_shout: bool,
+    pub mark_of_the_wild: bool,
+    pub power_word_fortitude: bool,
+    pub chaos_brand: bool,
+    pub mystic_touch: bool,
+    pub windfury_totem: bool,
+    pub hunters_mark: bool,
+    pub bleeding: bool,
+}
+
+impl Default for RaidBuffOptions {
+    fn default() -> Self {
+        Self {
+            arcane_intellect: true,
+            battle_shout: true,
+            mark_of_the_wild: true,
+            power_word_fortitude: true,
+            chaos_brand: true,
+            mystic_touch: true,
+            windfury_totem: true,
+            hunters_mark: true,
+            bleeding: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConsumableOptions {
+    pub flask: bool,
+    pub food: bool,
+    pub augmentation: bool,
+    pub potion: bool,
+    pub temporary_enchant: bool,
+}
+
+impl Default for ConsumableOptions {
+    fn default() -> Self {
+        Self {
+            flask: true,
+            food: true,
+            augmentation: true,
+            potion: true,
+            temporary_enchant: true,
+        }
+    }
+}
+
+impl Default for AnalysisOptions {
+    fn default() -> Self {
+        Self {
+            precision: PrecisionChoice::Fixed,
+            target_error: 0.2,
+            target_level: 93,
+            target_race: "humanoid".into(),
+            world_lag_ms: 50,
+            world_lag_stddev_ms: 5,
+            player_skill: 1.0,
+            seed: 1,
+            optimal_raid: true,
+            bloodlust: true,
+            bloodlust_time: 0,
+            bloodlust_percent: 0,
+            consumables: true,
+            raid_buffs: RaidBuffOptions::default(),
+            consumable_options: ConsumableOptions::default(),
+            report_details: true,
+            report_pets_separately: false,
+            custom_apl: String::new(),
+            custom_options: String::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct QuickSimRequest {
@@ -83,6 +193,8 @@ pub struct QuickSimRequest {
     pub desired_targets: u16,
     pub fight_style: String,
     pub cpu_preset: CpuChoice,
+    #[serde(default)]
+    pub analysis: AnalysisOptions,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -349,6 +461,7 @@ fn prepare_request(
     prepared.profile.simulation.vary_combat_length = request.vary_combat_length;
     prepared.profile.simulation.desired_targets = request.desired_targets;
     prepared.profile.simulation.fight_style = request.fight_style.clone();
+    apply_analysis_options(&mut prepared.profile, &request.analysis)?;
     let logical_cpus = std::thread::available_parallelism()
         .map(std::num::NonZero::get)
         .unwrap_or(1);
@@ -389,13 +502,263 @@ fn validate_request(request: &QuickSimRequest) -> Result<()> {
     }
     if !matches!(
         request.fight_style.as_str(),
-        "Patchwerk" | "DungeonSlice" | "HecticAddCleave" | "LightMovement"
+        "Patchwerk"
+            | "CastingPatchwerk"
+            | "DungeonSlice"
+            | "HecticAddCleave"
+            | "LightMovement"
+            | "HeavyMovement"
+            | "HelterSkelter"
+            | "CleaveAdd"
+            | "Beastlord"
     ) {
         return Err(Error::InvalidRequest(
             "fight style is not in the supported GUI allowlist".into(),
         ));
     }
+    validate_analysis_options(&request.analysis)?;
     Ok(())
+}
+
+fn validate_analysis_options(options: &AnalysisOptions) -> Result<()> {
+    if !options.target_error.is_finite() || !(0.01..=5.0).contains(&options.target_error) {
+        return Err(Error::InvalidRequest(
+            "target error must be between 0.01 and 5 percent".into(),
+        ));
+    }
+    if !(1..=100).contains(&options.target_level)
+        || !matches!(
+            options.target_race.as_str(),
+            "humanoid"
+                | "aberration"
+                | "beast"
+                | "demon"
+                | "dragonkin"
+                | "elemental"
+                | "giant"
+                | "mechanical"
+                | "undead"
+                | "not_specified"
+        )
+        || options.world_lag_ms > 2_000
+        || options.world_lag_stddev_ms > 1_000
+        || !options.player_skill.is_finite()
+        || !(0.1..=1.0).contains(&options.player_skill)
+        || options.seed == 0
+        || !(-3_600..=3_600).contains(&options.bloodlust_time)
+        || options.bloodlust_percent > 100
+        || options.custom_apl.len() > 256 * 1024
+        || options.custom_options.len() > 64 * 1024
+    {
+        return Err(Error::InvalidRequest(
+            "one or more advanced analysis options are outside the supported range".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn apply_analysis_options(
+    profile: &mut simshredder_domain::Profile,
+    options: &AnalysisOptions,
+) -> Result<()> {
+    profile.scalar_options.insert(
+        "target_error".into(),
+        match options.precision {
+            PrecisionChoice::Smart => options.target_error.to_string(),
+            PrecisionChoice::Fixed => "0".into(),
+        },
+    );
+    for (key, value) in [
+        ("target_level", options.target_level.to_string()),
+        ("target_race", options.target_race.clone()),
+        ("default_world_lag", format_seconds(options.world_lag_ms)),
+        (
+            "default_world_lag_stddev",
+            format_seconds(options.world_lag_stddev_ms),
+        ),
+        ("skill", options.player_skill.to_string()),
+        ("optimal_raid", u8::from(options.optimal_raid).to_string()),
+        (
+            "override.bloodlust",
+            u8::from(options.bloodlust).to_string(),
+        ),
+        ("bloodlust_time", options.bloodlust_time.to_string()),
+        ("bloodlust_percent", options.bloodlust_percent.to_string()),
+        (
+            "report_pets_separately",
+            u8::from(options.report_pets_separately).to_string(),
+        ),
+    ] {
+        profile.scalar_options.insert(key.into(), value);
+    }
+    for (key, enabled) in [
+        (
+            "override.arcane_intellect",
+            options.raid_buffs.arcane_intellect,
+        ),
+        ("override.battle_shout", options.raid_buffs.battle_shout),
+        (
+            "override.mark_of_the_wild",
+            options.raid_buffs.mark_of_the_wild,
+        ),
+        (
+            "override.power_word_fortitude",
+            options.raid_buffs.power_word_fortitude,
+        ),
+        ("override.chaos_brand", options.raid_buffs.chaos_brand),
+        ("override.mystic_touch", options.raid_buffs.mystic_touch),
+        ("override.windfury_totem", options.raid_buffs.windfury_totem),
+        ("override.hunters_mark", options.raid_buffs.hunters_mark),
+        ("override.bleeding", options.raid_buffs.bleeding),
+    ] {
+        profile
+            .scalar_options
+            .insert(key.into(), u8::from(enabled).to_string());
+    }
+    profile.simulation.report_details = options.report_details;
+    profile.simulation.seed = options.seed;
+    for (key, enabled) in [
+        ("flask", options.consumable_options.flask),
+        ("food", options.consumable_options.food),
+        ("augmentation", options.consumable_options.augmentation),
+        ("potion", options.consumable_options.potion),
+        (
+            "temporary_enchant",
+            options.consumable_options.temporary_enchant,
+        ),
+    ] {
+        if !options.consumables || !enabled {
+            profile.scalar_options.remove(key);
+        }
+    }
+    apply_custom_options(&mut profile.scalar_options, &options.custom_options)?;
+    if !options.custom_apl.trim().is_empty() {
+        profile.actions = parse_custom_apl(&options.custom_apl)?;
+        profile
+            .scalar_options
+            .insert("default_actions".into(), "0".into());
+    }
+    Ok(())
+}
+
+fn format_seconds(milliseconds: u16) -> String {
+    let seconds = f64::from(milliseconds) / 1_000.0;
+    format!("{seconds:.3}")
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_owned()
+}
+
+fn apply_custom_options(
+    destination: &mut std::collections::BTreeMap<String, String>,
+    source: &str,
+) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for (index, raw_line) in source.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            Error::InvalidRequest(format!(
+                "custom SimC option line {} must use key=value",
+                index + 1
+            ))
+        })?;
+        let key = key.trim();
+        let value = value.trim();
+        if !is_supported_custom_option(key)
+            || value.is_empty()
+            || value.len() > 4_096
+            || value.chars().any(char::is_control)
+        {
+            return Err(Error::InvalidRequest(format!(
+                "custom SimC option line {} is unsupported or unsafe",
+                index + 1
+            )));
+        }
+        if !seen.insert(key.to_owned()) {
+            return Err(Error::InvalidRequest(format!(
+                "custom SimC option duplicates {key}"
+            )));
+        }
+        destination.insert(key.into(), value.into());
+    }
+    Ok(())
+}
+
+fn is_supported_custom_option(key: &str) -> bool {
+    matches!(
+        key,
+        "override.arcane_intellect"
+            | "override.battle_shout"
+            | "override.mark_of_the_wild"
+            | "override.power_word_fortitude"
+            | "override.chaos_brand"
+            | "override.mystic_touch"
+            | "override.windfury_totem"
+            | "override.hunters_mark"
+            | "override.bleeding"
+            | "external_buffs.power_infusion"
+            | "external_buffs.blessing_of_summer"
+            | "external_buffs.blessing_of_autumn"
+            | "external_buffs.blessing_of_winter"
+            | "external_buffs.blessing_of_spring"
+            | "report_rng"
+            | "full_damage_sources_chart"
+            | "buff_uptime_timeline"
+            | "buff_stack_uptime_timeline"
+            | "reaction_time"
+            | "queue_lag"
+            | "queue_lag_stddev"
+            | "gcd_lag"
+            | "gcd_lag_stddev"
+            | "channel_lag"
+            | "channel_lag_stddev"
+            | "travel_variance"
+            | "enemy_initial_health_percentage"
+            | "enemy_death_pct"
+    ) || key.starts_with("midnight.")
+}
+
+fn parse_custom_apl(source: &str) -> Result<Vec<ActionDirective>> {
+    let mut actions = Vec::new();
+    for (index, raw_line) in source.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            Error::InvalidRequest(format!(
+                "custom APL line {} must use actions...=...",
+                index + 1
+            ))
+        })?;
+        if !key.starts_with("actions")
+            || key.len() > 128
+            || !key.chars().all(|character| {
+                character.is_ascii_lowercase()
+                    || character.is_ascii_digit()
+                    || matches!(character, '_' | '.' | '+')
+            })
+            || value.is_empty()
+            || value.len() > 16 * 1024
+            || value.chars().any(char::is_control)
+        {
+            return Err(Error::InvalidRequest(format!(
+                "custom APL line {} is unsupported or unsafe",
+                index + 1
+            )));
+        }
+        actions.push(ActionDirective {
+            key: key.into(),
+            value: value.into(),
+        });
+    }
+    if actions.is_empty() {
+        return Err(Error::InvalidRequest("custom APL is empty".into()));
+    }
+    Ok(actions)
 }
 
 const fn cpu_preset(choice: CpuChoice) -> CpuPreset {
@@ -506,6 +869,7 @@ mod tests {
             desired_targets: 3,
             fight_style: "Patchwerk".into(),
             cpu_preset: CpuChoice::Balanced,
+            analysis: AnalysisOptions::default(),
         }
     }
 
@@ -513,12 +877,68 @@ mod tests {
     fn preview_matches_every_gui_simulation_choice() {
         let temporary = tempfile::tempdir().unwrap();
         let service = DesktopService::open(temporary.path()).unwrap();
-        let preview = service.prepare(&request()).unwrap();
+        let mut request = request();
+        request.analysis.precision = PrecisionChoice::Smart;
+        request.analysis.target_error = 0.15;
+        request.analysis.target_level = 92;
+        request.analysis.target_race = "demon".into();
+        request.analysis.world_lag_ms = 75;
+        request.analysis.world_lag_stddev_ms = 10;
+        request.analysis.player_skill = 0.95;
+        request.analysis.seed = 42;
+        request.analysis.optimal_raid = false;
+        request.analysis.bloodlust = false;
+        request.analysis.raid_buffs.arcane_intellect = false;
+        request.analysis.consumable_options.potion = false;
+        request.analysis.bloodlust_time = -60;
+        request.analysis.bloodlust_percent = 20;
+        request.analysis.report_details = false;
+        request.analysis.report_pets_separately = true;
+        request.analysis.custom_options =
+            "external_buffs.power_infusion=0/120\nmidnight.sealed_chaos_urn_dispell=1".into();
+        request.analysis.custom_apl = "actions=/auto_attack\nactions+=/bloodthirst".into();
+        let preview = service.prepare(&request).unwrap();
         assert!(preview.generated_input.contains("iterations=12345\n"));
         assert!(preview.generated_input.contains("max_time=240\n"));
         assert!(preview.generated_input.contains("vary_combat_length=0.1\n"));
         assert!(preview.generated_input.contains("desired_targets=3\n"));
         assert!(preview.generated_input.contains("fight_style=Patchwerk\n"));
+        assert!(preview.generated_input.contains("target_error=0.15\n"));
+        assert!(preview.generated_input.contains("target_level=92\n"));
+        assert!(preview.generated_input.contains("target_race=demon\n"));
+        assert!(
+            preview
+                .generated_input
+                .contains("default_world_lag=0.075\n")
+        );
+        assert!(preview.generated_input.contains("skill=0.95\n"));
+        assert!(preview.generated_input.contains("seed=42\n"));
+        assert!(preview.generated_input.contains("optimal_raid=0\n"));
+        assert!(preview.generated_input.contains("override.bloodlust=0\n"));
+        assert!(
+            preview
+                .generated_input
+                .contains("override.arcane_intellect=0\n")
+        );
+        assert!(preview.generated_input.contains("bloodlust_time=-60\n"));
+        assert!(preview.generated_input.contains("bloodlust_percent=20\n"));
+        assert!(preview.generated_input.contains("report_details=0\n"));
+        assert!(
+            preview
+                .generated_input
+                .contains("report_pets_separately=1\n")
+        );
+        assert!(
+            preview
+                .generated_input
+                .contains("external_buffs.power_infusion=0/120\n")
+        );
+        assert!(
+            preview
+                .generated_input
+                .contains("midnight.sealed_chaos_urn_dispell=1\n")
+        );
+        assert!(preview.generated_input.contains("actions=/auto_attack\n"));
         assert!(
             preview
                 .generated_input
@@ -539,6 +959,18 @@ mod tests {
         ));
         invalid = request();
         invalid.fight_style = "include=/tmp/evil".into();
+        assert!(matches!(
+            service.prepare(&invalid),
+            Err(Error::InvalidRequest(_))
+        ));
+        invalid = request();
+        invalid.analysis.custom_options = "output=/tmp/stolen".into();
+        assert!(matches!(
+            service.prepare(&invalid),
+            Err(Error::InvalidRequest(_))
+        ));
+        invalid = request();
+        invalid.analysis.custom_apl = "json2=/tmp/stolen".into();
         assert!(matches!(
             service.prepare(&invalid),
             Err(Error::InvalidRequest(_))

@@ -25,8 +25,8 @@ pub enum CharacterClass {
 impl CharacterClass {
     pub const fn simc_token(self) -> &'static str {
         match self {
-            Self::DeathKnight => "death_knight",
-            Self::DemonHunter => "demon_hunter",
+            Self::DeathKnight => "deathknight",
+            Self::DemonHunter => "demonhunter",
             Self::Druid => "druid",
             Self::Evoker => "evoker",
             Self::Hunter => "hunter",
@@ -119,6 +119,8 @@ impl GearSlot {
 pub struct Item {
     pub slot: GearSlot,
     pub id: u32,
+    #[serde(default)]
+    pub name: Option<String>,
     pub options: BTreeMap<String, String>,
 }
 
@@ -179,10 +181,18 @@ pub struct Profile {
     pub specialization: String,
     pub scalar_options: BTreeMap<String, String>,
     pub talents: BTreeMap<String, String>,
+    #[serde(default)]
+    pub saved_talent_loadouts: Vec<TalentLoadout>,
     pub equipped: BTreeMap<GearSlot, Item>,
     pub bag_items: Vec<BagItem>,
     pub actions: Vec<ActionDirective>,
     pub simulation: SimulationOptions,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TalentLoadout {
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

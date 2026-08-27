@@ -11,6 +11,7 @@ import {
 } from "../profiles";
 import {
   defaultQuickRequest,
+  detectSourceFormat,
   quickPrepare,
   type PreparedQuickSim,
   type QuickSimRequest,
@@ -22,7 +23,7 @@ export function ImportPage({ onPrepared }: {
 }) {
   const { t } = useTranslation();
   const [source, setSource] = useState("");
-  const [format, setFormat] = useState<SourceFormat>("addonExport");
+  const [format, setFormat] = useState<SourceFormat>("simcFile");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<CharacterProfile[]>([]);
@@ -51,8 +52,9 @@ export function ImportPage({ onPrepared }: {
       setError(t("importPage.fileTooLarge"));
       return;
     }
-    setSource(await file.text());
-    setFormat("simcFile");
+    const nextSource = await file.text();
+    setSource(nextSource);
+    setFormat(detectSourceFormat(nextSource));
     setError(null);
   };
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
@@ -196,7 +198,7 @@ export function ImportPage({ onPrepared }: {
         ))}
       </fieldset>
       <div className="source-drop" onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
-        <textarea aria-label={t("importPage.sourceLabel")} onChange={(event) => setSource(event.target.value)} placeholder={t("importPage.sourcePlaceholder")} spellCheck={false} value={source} />
+        <textarea aria-label={t("importPage.sourceLabel")} onChange={(event) => { const nextSource = event.target.value; setSource(nextSource); setFormat(detectSourceFormat(nextSource)); }} placeholder={t("importPage.sourcePlaceholder")} spellCheck={false} value={source} />
         <div className="source-actions">
           <span><Upload aria-hidden="true" size={16} />{t("importPage.dropHint")}</span>
           <button className="secondary-button" type="button" onClick={() => fileInput.current?.click()}><FileInput aria-hidden="true" size={17} />{t("importPage.chooseFile")}</button>

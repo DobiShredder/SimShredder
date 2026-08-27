@@ -44,6 +44,7 @@ pub enum ChangeKind {
     Gem,
     Enchant,
     Upgrade,
+    Catalyst,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -67,6 +68,8 @@ pub struct ItemVariant {
     pub key: String,
     pub source_item_id: u32,
     pub slot: GearSlot,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub rank: u8,
     pub gem_ids: Vec<u32>,
     pub enchant_id: Option<u32>,
@@ -74,9 +77,19 @@ pub struct ItemVariant {
     pub cost: CostVector,
     pub actions: Vec<UpgradeAction>,
     pub unique_groups: BTreeSet<String>,
+    #[serde(default)]
+    pub set_groups: BTreeSet<String>,
     pub weapon_kind: WeaponKind,
     pub embellishment: bool,
+    #[serde(default)]
+    pub catalyst: bool,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     pub changed: bool,
+}
+
+const fn default_enabled() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -89,11 +102,43 @@ pub struct BudgetSnapshot {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TalentVariant {
+    pub key: String,
+    pub label: String,
+    pub option: String,
+    pub value: String,
+    pub changed: bool,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileOptionVariant {
+    pub key: String,
+    pub label: String,
+    pub option: String,
+    pub value: String,
+    pub changed: bool,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchRequest {
     pub expected_rule_revision: String,
     pub game_build: u32,
     pub candidates: BTreeMap<GearSlot, Vec<ItemVariant>>,
+    #[serde(default)]
+    pub talent_candidates: Vec<TalentVariant>,
+    #[serde(default)]
+    pub option_candidates: BTreeMap<String, Vec<ProfileOptionVariant>>,
     pub budget: BudgetSnapshot,
+    #[serde(default)]
+    pub minimum_set_pieces: BTreeMap<String, u8>,
+    #[serde(default)]
+    pub catalyst_charges: u8,
     pub max_combinations: usize,
 }
 
@@ -104,6 +149,11 @@ pub struct Loadout {
     pub items: BTreeMap<GearSlot, ItemVariant>,
     pub cost: CostVector,
     pub changed_slots: usize,
+    #[serde(default)]
+    pub changed_options: usize,
+    pub talent: TalentVariant,
+    #[serde(default)]
+    pub profile_options: BTreeMap<String, ProfileOptionVariant>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -129,6 +179,8 @@ pub struct RejectionBreakdown {
     pub weapon_constraint: u64,
     pub budget: u64,
     pub symmetric_duplicate: u64,
+    pub minimum_set_bonus: u64,
+    pub catalyst_limit: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -139,6 +191,8 @@ enum RejectionReason {
     EmbellishmentLimit,
     WeaponConstraint,
     Budget,
+    MinimumSetBonus,
+    CatalystLimit,
 }
 
 impl RejectionBreakdown {
@@ -150,6 +204,8 @@ impl RejectionBreakdown {
             RejectionReason::EmbellishmentLimit => &mut self.embellishment_limit,
             RejectionReason::WeaponConstraint => &mut self.weapon_constraint,
             RejectionReason::Budget => &mut self.budget,
+            RejectionReason::MinimumSetBonus => &mut self.minimum_set_bonus,
+            RejectionReason::CatalystLimit => &mut self.catalyst_limit,
         };
         *counter = counter.saturating_add(1);
     }
@@ -224,11 +280,34 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub fn generate_loadouts(rules: &RuleManifest, request: &SearchRequest) -> Result<SearchPreview> {
     validate_request(rules, request)?;
     let slots: Vec<_> = request.candidates.keys().copied().collect();
-    let raw_combinations = slots.iter().try_fold(1_u64, |total, slot| {
+    let gear_combinations = slots.iter().try_fold(1_u64, |total, slot| {
         total
             .checked_mul(request.candidates[slot].len() as u64)
             .ok_or_else(|| Error::Invalid("combination count overflowed".into()))
     })?;
+    let talent_count = request
+        .talent_candidates
+        .iter()
+        .filter(|talent| talent.enabled)
+        .count();
+    let option_count =
+        request
+            .option_candidates
+            .values()
+            .try_fold(1_u64, |total, candidates| {
+                total
+                    .checked_mul(
+                        candidates
+                            .iter()
+                            .filter(|candidate| candidate.enabled)
+                            .count() as u64,
+                    )
+                    .ok_or_else(|| Error::Invalid("combination count overflowed".into()))
+            })?;
+    let raw_combinations = gear_combinations
+        .checked_mul(talent_count as u64)
+        .and_then(|count| count.checked_mul(option_count))
+        .ok_or_else(|| Error::Invalid("combination count overflowed".into()))?;
     if raw_combinations > MAX_RAW_COMBINATIONS {
         return Err(Error::Invalid(format!(
             "raw combination count {raw_combinations} exceeds the {MAX_RAW_COMBINATIONS} safety limit"
@@ -291,13 +370,58 @@ fn enumerate(
 ) -> Result<()> {
     if index == slots.len() {
         match make_loadout(rules, request, selected)? {
-            Ok(loadout) => {
-                if is_canonical_symmetric_selection(&loadout.items) {
-                    *valid_count = valid_count.checked_add(1).ok_or_else(|| {
-                        Error::Invalid("valid combination count overflowed".into())
-                    })?;
-                    if output.len() < request.max_combinations {
-                        output.push(loadout);
+            Ok(base_loadout) => {
+                if is_canonical_symmetric_selection(&base_loadout.items) {
+                    for talent in request
+                        .talent_candidates
+                        .iter()
+                        .filter(|talent| talent.enabled)
+                    {
+                        let remaining = request.max_combinations.saturating_sub(output.len());
+                        let option_combinations =
+                            bounded_option_combinations(&request.option_candidates, remaining);
+                        let exact_option_count = request.option_candidates.values().try_fold(
+                            1_u64,
+                            |total, candidates| {
+                                total
+                                    .checked_mul(
+                                        candidates
+                                            .iter()
+                                            .filter(|candidate| candidate.enabled)
+                                            .count() as u64,
+                                    )
+                                    .ok_or_else(|| {
+                                        Error::Invalid("combination count overflowed".into())
+                                    })
+                            },
+                        )?;
+                        *valid_count =
+                            valid_count.checked_add(exact_option_count).ok_or_else(|| {
+                                Error::Invalid("valid combination count overflowed".into())
+                            })?;
+                        for options in option_combinations {
+                            let mut loadout = base_loadout.clone();
+                            loadout.talent = talent.clone();
+                            loadout.profile_options = options;
+                            loadout.changed_options = usize::from(talent.changed)
+                                + loadout
+                                    .profile_options
+                                    .values()
+                                    .filter(|candidate| candidate.changed)
+                                    .count();
+                            let option_key = loadout
+                                .profile_options
+                                .iter()
+                                .map(|(axis, candidate)| format!("{axis}={}", candidate.key))
+                                .collect::<Vec<_>>()
+                                .join("|");
+                            loadout.key = short_hash(&format!(
+                                "{}|talent={}|{option_key}",
+                                canonical_selection_key(&loadout.items),
+                                talent.key
+                            ));
+                            output.push(loadout);
+                        }
                     }
                 } else {
                     rejections.symmetric_duplicate =
@@ -334,6 +458,8 @@ fn make_loadout(
     let mut unique = BTreeSet::new();
     let mut embellishments = 0_u8;
     let mut cost = CostVector::new();
+    let mut set_pieces = BTreeMap::<&str, u8>::new();
+    let mut catalyst_uses = 0_u8;
     for (slot, item) in selected {
         if item.slot != *slot || item.source_item_id == 0 || item.key.is_empty() {
             return Err(Error::Invalid("candidate identity is inconsistent".into()));
@@ -350,6 +476,11 @@ fn make_loadout(
             return Ok(Err(RejectionReason::UniqueEquipped));
         }
         embellishments += u8::from(item.embellishment);
+        catalyst_uses = catalyst_uses.saturating_add(u8::from(item.catalyst));
+        for group in &item.set_groups {
+            let count = set_pieces.entry(group).or_default();
+            *count = count.saturating_add(1);
+        }
         add_cost(&mut cost, &item.cost)?;
     }
     if embellishments > rules.max_embellishments {
@@ -357,6 +488,14 @@ fn make_loadout(
     }
     if !valid_weapons(selected) {
         return Ok(Err(RejectionReason::WeaponConstraint));
+    }
+    if catalyst_uses > request.catalyst_charges {
+        return Ok(Err(RejectionReason::CatalystLimit));
+    }
+    if request.minimum_set_pieces.iter().any(|(group, minimum)| {
+        set_pieces.get(group.as_str()).copied().unwrap_or_default() < *minimum
+    }) {
+        return Ok(Err(RejectionReason::MinimumSetBonus));
     }
     if !within_budget(&cost, &request.budget, &rules.currency_ids)? {
         return Ok(Err(RejectionReason::Budget));
@@ -368,7 +507,52 @@ fn make_loadout(
         items: selected.clone(),
         cost,
         changed_slots: selected.values().filter(|item| item.changed).count(),
+        changed_options: 0,
+        talent: request
+            .talent_candidates
+            .iter()
+            .find(|talent| talent.enabled && !talent.changed)
+            .cloned()
+            .ok_or_else(|| {
+                Error::Invalid("an enabled active talent baseline is required".into())
+            })?,
+        profile_options: BTreeMap::new(),
     }))
+}
+
+fn bounded_option_combinations(
+    candidates: &BTreeMap<String, Vec<ProfileOptionVariant>>,
+    limit: usize,
+) -> Vec<BTreeMap<String, ProfileOptionVariant>> {
+    fn visit(
+        axes: &[(&String, &Vec<ProfileOptionVariant>)],
+        index: usize,
+        selected: &mut BTreeMap<String, ProfileOptionVariant>,
+        output: &mut Vec<BTreeMap<String, ProfileOptionVariant>>,
+        limit: usize,
+    ) {
+        if output.len() >= limit {
+            return;
+        }
+        if index == axes.len() {
+            output.push(selected.clone());
+            return;
+        }
+        let (axis, values) = axes[index];
+        for value in values.iter().filter(|value| value.enabled) {
+            selected.insert(axis.clone(), value.clone());
+            visit(axes, index + 1, selected, output, limit);
+            selected.remove(axis);
+            if output.len() >= limit {
+                break;
+            }
+        }
+    }
+
+    let axes: Vec<_> = candidates.iter().collect();
+    let mut output = Vec::new();
+    visit(&axes, 0, &mut BTreeMap::new(), &mut output, limit);
+    output
 }
 
 fn validate_actions(item: &ItemVariant) -> Result<()> {
@@ -472,8 +656,10 @@ fn same_final_tuple(left: &ItemVariant, right: &ItemVariant) -> bool {
         && left.enchant_id == right.enchant_id
         && left.simc_options == right.simc_options
         && left.unique_groups == right.unique_groups
+        && left.set_groups == right.set_groups
         && left.weapon_kind == right.weapon_kind
         && left.embellishment == right.embellishment
+        && left.catalyst == right.catalyst
 }
 
 fn cost_dominates(left: &CostVector, right: &CostVector) -> bool {
@@ -487,7 +673,9 @@ fn validate_simc_options(options: &BTreeMap<String, String>) -> Result<()> {
     for (key, value) in options {
         if !matches!(
             key.as_str(),
-            "enchant_id"
+            "enchant"
+                | "embellishment"
+                | "enchant_id"
                 | "gem_id"
                 | "bonus_id"
                 | "gem_bonus_id"
@@ -497,6 +685,7 @@ fn validate_simc_options(options: &BTreeMap<String, String>) -> Result<()> {
                 | "content_tuning"
                 | "redirected_base_stats"
                 | "titan_disc_id"
+                | "context"
                 | "ilevel"
         ) || value.is_empty()
             || value.len() > 4096
@@ -534,11 +723,91 @@ fn validate_request(rules: &RuleManifest, request: &SearchRequest) -> Result<()>
     }
     if request.candidates.is_empty()
         || request.candidates.values().any(Vec::is_empty)
+        || request
+            .talent_candidates
+            .iter()
+            .filter(|talent| talent.enabled)
+            .count()
+            == 0
         || !(1..=MAX_EMITTED_COMBINATIONS).contains(&request.max_combinations)
     {
         return Err(Error::Invalid(format!(
             "candidates must be non-empty and the emitted safety cap must be between 1 and {MAX_EMITTED_COMBINATIONS}"
         )));
+    }
+    let enabled_talents: Vec<_> = request
+        .talent_candidates
+        .iter()
+        .filter(|talent| talent.enabled)
+        .collect();
+    if enabled_talents
+        .iter()
+        .filter(|talent| !talent.changed)
+        .count()
+        != 1
+        || enabled_talents.iter().any(|talent| {
+            talent.key.is_empty()
+                || talent.key.len() > 128
+                || talent.label.is_empty()
+                || talent.label.len() > 256
+                || (!talent.option.is_empty()
+                    && !matches!(
+                        talent.option.as_str(),
+                        "talents"
+                            | "class_talents"
+                            | "spec_talents"
+                            | "hero_talents"
+                            | "omnium_talents"
+                    ))
+                || (talent.option.is_empty() != talent.value.is_empty())
+                || (talent.option.is_empty() && talent.changed)
+                || talent.value.len() > 16 * 1024
+                || !talent.value.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, ':' | '/' | '-' | '_')
+                })
+        })
+    {
+        return Err(Error::Invalid(
+            "talent candidates are invalid or do not contain exactly one active baseline".into(),
+        ));
+    }
+    for (axis, candidates) in &request.option_candidates {
+        let enabled: Vec<_> = candidates
+            .iter()
+            .filter(|candidate| candidate.enabled)
+            .collect();
+        if axis.is_empty()
+            || axis.len() > 128
+            || enabled
+                .iter()
+                .filter(|candidate| !candidate.changed)
+                .count()
+                != 1
+            || enabled.iter().any(|candidate| {
+                candidate.key.is_empty()
+                    || candidate.key.len() > 128
+                    || candidate.label.is_empty()
+                    || candidate.label.len() > 256
+                    || !matches!(
+                        candidate.option.as_str(),
+                        "food"
+                            | "flask"
+                            | "potion"
+                            | "augmentation"
+                            | "temporary_enchant"
+                            | "omnium_talents"
+                    )
+                    || candidate.value.len() > 16 * 1024
+                    || !candidate.value.chars().all(|character| {
+                        character.is_ascii_alphanumeric()
+                            || matches!(character, ':' | '/' | '-' | '_' | '.')
+                    })
+            })
+        {
+            return Err(Error::Invalid(format!(
+                "profile option candidates are invalid for axis {axis}"
+            )));
+        }
     }
     for candidates in request.candidates.values() {
         if candidates.len() > MAX_CANDIDATES_PER_SLOT {
@@ -552,6 +821,13 @@ fn validate_request(rules: &RuleManifest, request: &SearchRequest) -> Result<()>
                 "candidate keys must be unique within each slot".into(),
             ));
         }
+    }
+    if request.minimum_set_pieces.iter().any(|(group, minimum)| {
+        group.is_empty() || group.len() > 128 || *minimum == 0 || *minimum > 8
+    }) {
+        return Err(Error::Invalid(
+            "minimum set constraints must use a non-empty group and 1..=8 pieces".into(),
+        ));
     }
     for currency in request
         .budget
@@ -690,14 +966,36 @@ pub fn build_profileset_stage_input(
     output.push_str("\n# SimShredder Top Gear profilesets\n");
     for loadout in loadouts {
         let mut changes = loadout.items.iter().filter(|(_, item)| item.changed);
-        let Some((slot, item)) = changes.next() else {
+        let mut has_directive = false;
+        if let Some((slot, item)) = changes.next() {
+            write_profileset_item(&mut output, &loadout.key, false, *slot, item);
+            has_directive = true;
+            for (slot, item) in changes {
+                write_profileset_item(&mut output, &loadout.key, true, *slot, item);
+            }
+        }
+        if !loadout.talent.option.is_empty() {
+            let talent_operator = if has_directive { "+=" } else { "=" };
+            writeln!(
+                output,
+                "profileset.{}{talent_operator}{}={}",
+                loadout.key, loadout.talent.option, loadout.talent.value
+            )
+            .expect("String writes cannot fail");
+        } else if !has_directive {
             writeln!(output, "profileset.{}=default_actions=1", loadout.key)
                 .expect("String writes cannot fail");
-            continue;
-        };
-        write_profileset_item(&mut output, &loadout.key, false, *slot, item);
-        for (slot, item) in changes {
-            write_profileset_item(&mut output, &loadout.key, true, *slot, item);
+        }
+        for candidate in loadout.profile_options.values() {
+            if candidate.value.is_empty() {
+                continue;
+            }
+            writeln!(
+                output,
+                "profileset.{}+={}={}",
+                loadout.key, candidate.option, candidate.value
+            )
+            .expect("String writes cannot fail");
         }
     }
     Ok(output.into_bytes())
@@ -1019,8 +1317,11 @@ pub fn build_action_states(baseline: &Loadout, winner: &Loadout) -> Result<Vec<A
             loadout: Loadout {
                 key: short_hash(&state_identity),
                 changed_slots: items.values().filter(|item| item.changed).count(),
+                changed_options: winner.changed_options,
                 items,
                 cost,
+                talent: winner.talent.clone(),
+                profile_options: winner.profile_options.clone(),
             },
             applied_action_ids: applied,
         });
@@ -1166,6 +1467,7 @@ mod tests {
             key: key.into(),
             source_item_id: key.bytes().map(u32::from).sum::<u32>() + 1,
             slot,
+            display_name: None,
             rank: 1,
             gem_ids: Vec::new(),
             enchant_id: None,
@@ -1173,9 +1475,23 @@ mod tests {
             cost: BTreeMap::from([("crest".into(), cost)]),
             actions: Vec::new(),
             unique_groups: BTreeSet::new(),
+            set_groups: BTreeSet::new(),
             weapon_kind: WeaponKind::None,
             embellishment: false,
+            catalyst: false,
+            enabled: true,
             changed: key != "worn",
+        }
+    }
+
+    fn talent() -> TalentVariant {
+        TalentVariant {
+            key: "active".into(),
+            label: "Active".into(),
+            option: "talents".into(),
+            value: "CUQAAAAAAAA".into(),
+            changed: false,
+            enabled: true,
         }
     }
 
@@ -1184,11 +1500,15 @@ mod tests {
             expected_rule_revision: "test-v1".into(),
             game_build: 69465,
             candidates,
+            talent_candidates: vec![talent()],
+            option_candidates: BTreeMap::new(),
             budget: BudgetSnapshot {
                 balances: BTreeMap::from([("crest".into(), 10), ("valor".into(), 20)]),
                 reserves: BTreeMap::from([("crest".into(), 2)]),
                 confirmed_at_unix_seconds: 1,
             },
+            minimum_set_pieces: BTreeMap::new(),
+            catalyst_charges: 0,
             max_combinations: 100,
         }
     }
@@ -1399,11 +1719,110 @@ mod tests {
             items: BTreeMap::from([(GearSlot::Head, changed)]),
             cost: BTreeMap::new(),
             changed_slots: 1,
+            changed_options: 0,
+            talent: talent(),
+            profile_options: BTreeMap::new(),
         };
         let text =
             String::from_utf8(build_profileset_input(b"warrior=Tester\n", &[loadout]).unwrap())
                 .unwrap();
         assert!(text.contains("profileset.0123abcd=head=,id="));
+    }
+
+    #[test]
+    fn talent_loadouts_expand_the_exact_product_and_reach_profilesets() {
+        let mut search = request(BTreeMap::from([(
+            GearSlot::Head,
+            vec![
+                variant("worn", GearSlot::Head, 0),
+                variant("candidate", GearSlot::Head, 0),
+            ],
+        )]));
+        search.talent_candidates.push(TalentVariant {
+            key: "dungeon".into(),
+            label: "Dungeon".into(),
+            option: "talents".into(),
+            value: "SAVED".into(),
+            changed: true,
+            enabled: true,
+        });
+        let preview = generate_loadouts(&rules(), &search).unwrap();
+        assert_eq!(preview.raw_combinations, 4);
+        assert_eq!(preview.valid_combinations, 4);
+        let text = String::from_utf8(
+            build_profileset_input(b"warrior=Tester\n", &preview.loadouts).unwrap(),
+        )
+        .unwrap();
+        assert!(text.contains("talents=CUQAAAAAAAA"));
+        assert!(text.contains("talents=SAVED"));
+    }
+
+    #[test]
+    fn consumable_and_omnium_candidates_are_real_profileset_dimensions() {
+        let mut search = request(BTreeMap::from([(
+            GearSlot::Head,
+            vec![variant("worn", GearSlot::Head, 0)],
+        )]));
+        search.option_candidates.insert(
+            "food".into(),
+            vec![
+                ProfileOptionVariant {
+                    key: "active-food".into(),
+                    label: "Profile default".into(),
+                    option: "food".into(),
+                    value: String::new(),
+                    changed: false,
+                    enabled: true,
+                },
+                ProfileOptionVariant {
+                    key: "no-food".into(),
+                    label: "None".into(),
+                    option: "food".into(),
+                    value: "disabled".into(),
+                    changed: true,
+                    enabled: true,
+                },
+            ],
+        );
+        search.option_candidates.insert(
+            "omnium".into(),
+            vec![ProfileOptionVariant {
+                key: "active-omnium".into(),
+                label: "Active".into(),
+                option: "omnium_talents".into(),
+                value: "123:1/456:2".into(),
+                changed: false,
+                enabled: true,
+            }],
+        );
+        let preview = generate_loadouts(&rules(), &search).unwrap();
+        assert_eq!(preview.raw_combinations, 2);
+        assert_eq!(preview.valid_combinations, 2);
+        let text = String::from_utf8(
+            build_profileset_input(b"warrior=Tester\n", &preview.loadouts).unwrap(),
+        )
+        .unwrap();
+        assert!(text.contains("+=food=disabled"));
+        assert!(text.contains("+=omnium_talents=123:1/456:2"));
+    }
+
+    #[test]
+    fn set_minimum_and_catalyst_charges_reject_invalid_loadouts() {
+        let mut worn = variant("worn", GearSlot::Head, 0);
+        worn.set_groups.insert("tier".into());
+        let mut converted = variant("converted", GearSlot::Head, 0);
+        converted.set_groups.insert("tier".into());
+        converted.catalyst = true;
+        let mut search = request(BTreeMap::from([(GearSlot::Head, vec![worn, converted])]));
+        let preview = generate_loadouts(&rules(), &search).unwrap();
+        assert_eq!(preview.valid_combinations, 1);
+        assert_eq!(preview.rejections.catalyst_limit, 1);
+
+        search.catalyst_charges = 1;
+        search.minimum_set_pieces.insert("tier".into(), 2);
+        let preview = generate_loadouts(&rules(), &search).unwrap();
+        assert_eq!(preview.valid_combinations, 0);
+        assert_eq!(preview.rejections.minimum_set_bonus, 2);
     }
 
     #[test]
@@ -1421,6 +1840,9 @@ mod tests {
             items: BTreeMap::new(),
             cost: BTreeMap::from([("crest".into(), 1)]),
             changed_slots: 1,
+            changed_options: 0,
+            talent: talent(),
+            profile_options: BTreeMap::new(),
         };
         let costly = Loadout {
             key: "costly".into(),
@@ -1513,6 +1935,9 @@ mod tests {
             items: BTreeMap::from([(GearSlot::Head, baseline_item.clone())]),
             cost: BTreeMap::new(),
             changed_slots: 0,
+            changed_options: 0,
+            talent: talent(),
+            profile_options: BTreeMap::new(),
         };
         let action = |id: &str, option: &str, value: &str| UpgradeAction {
             id: id.into(),
@@ -1536,6 +1961,9 @@ mod tests {
             items: BTreeMap::from([(GearSlot::Head, winner_item)]),
             cost: BTreeMap::from([("crest".into(), 2)]),
             changed_slots: 1,
+            changed_options: 0,
+            talent: talent(),
+            profile_options: BTreeMap::new(),
         };
         let states = build_action_states(&baseline, &winner).unwrap();
         assert_eq!(states.len(), 4);

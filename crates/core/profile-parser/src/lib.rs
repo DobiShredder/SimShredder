@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, str::FromStr};
 use regex::Regex;
 use simshredder_domain::{
     ActionDirective, AddonMetadata, BagItem, CharacterClass, GameChannel, GearSlot, Item, Profile,
-    Role, SimulationOptions, SourceKind,
+    Role, SimulationOptions, SourceKind, TalentLoadout,
 };
 use thiserror::Error;
 
@@ -33,10 +33,11 @@ struct ProfileDraft {
     race: Option<String>,
     region: Option<String>,
     server: Option<String>,
-    role: Option<Role>,
+    role: Option<Option<Role>>,
     specialization: Option<String>,
     scalar_options: BTreeMap<String, String>,
     talents: BTreeMap<String, String>,
+    saved_talent_loadouts: Vec<TalentLoadout>,
     equipped: BTreeMap<GearSlot, Item>,
     bag_items: Vec<BagItem>,
     actions: Vec<ActionDirective>,
@@ -71,6 +72,8 @@ fn parse(input: &str, source_kind: SourceKind) -> Result<Profile> {
     let mut wow_metadata = None;
     let mut in_bag_section = false;
     let mut pending_bag_name = None;
+    let mut pending_equipped_name = None;
+    let mut pending_saved_loadout_name = None;
 
     for (index, raw_line) in input.lines().enumerate() {
         let line_number = index + 1;
@@ -111,14 +114,33 @@ fn parse(input: &str, source_kind: SourceKind) -> Result<Profile> {
                     pending_bag_name = None;
                 } else if let Some((key, value)) = comment.split_once('=') {
                     if let Some(slot) = parse_gear_slot(key.trim()) {
-                        let item = parse_item(slot, value.trim(), line_number)?;
+                        let mut item = parse_item(slot, value.trim(), line_number)?;
+                        item.name.clone_from(&pending_bag_name);
                         draft.bag_items.push(BagItem {
                             item,
                             name: pending_bag_name.take(),
                         });
                     }
                 } else if !comment.starts_with("upgrade_levels=") {
-                    pending_bag_name = Some(comment.to_owned());
+                    pending_bag_name = Some(if looks_like_item_comment(comment) {
+                        item_name_from_comment(comment)
+                    } else {
+                        comment.to_owned()
+                    });
+                }
+            } else {
+                let comment = comment.trim();
+                if let Some(name) = comment.strip_prefix("Saved Loadout:") {
+                    pending_saved_loadout_name = Some(name.trim().to_owned());
+                } else if let Some(value) = comment.strip_prefix("talents=")
+                    && let Some(name) = pending_saved_loadout_name.take()
+                {
+                    draft.saved_talent_loadouts.push(TalentLoadout {
+                        name,
+                        value: value.trim().to_owned(),
+                    });
+                } else if looks_like_item_comment(comment) {
+                    pending_equipped_name = Some(item_name_from_comment(comment));
                 }
             }
             continue;
@@ -141,7 +163,8 @@ fn parse(input: &str, source_kind: SourceKind) -> Result<Profile> {
             draft.class = Some(class);
             draft.name = Some(parse_player_name(value, line_number)?);
         } else if let Some(slot) = parse_gear_slot(key) {
-            let item = parse_item(slot, value, line_number)?;
+            let mut item = parse_item(slot, value, line_number)?;
+            item.name = pending_equipped_name.take();
             if draft.equipped.insert(slot, item).is_some() {
                 return invalid(line_number, format!("duplicate equipped slot: {key}"));
             }
@@ -175,9 +198,10 @@ fn parse(input: &str, source_kind: SourceKind) -> Result<Profile> {
             )?;
         } else if key == "role" {
             let role = match value {
-                "attack" => Role::Attack,
-                "heal" => Role::Heal,
-                "tank" => Role::Tank,
+                "attack" | "melee" | "spell" | "hybrid" | "dps" => Some(Role::Attack),
+                "heal" => Some(Role::Heal),
+                "tank" => Some(Role::Tank),
+                "auto" => None,
                 _ => return invalid(line_number, format!("unsupported role: {value}")),
             };
             set_once(&mut draft.role, role, line_number, key)?;
@@ -226,6 +250,13 @@ fn parse(input: &str, source_kind: SourceKind) -> Result<Profile> {
     } else {
         GameChannel::Unspecified
     };
+    let specialization = draft
+        .specialization
+        .ok_or(ParseError::Missing("specialization"))?;
+    let role = draft
+        .role
+        .flatten()
+        .unwrap_or_else(|| inferred_role(&specialization));
     Ok(Profile {
         source_kind,
         channel,
@@ -236,17 +267,32 @@ fn parse(input: &str, source_kind: SourceKind) -> Result<Profile> {
         race: draft.race.ok_or(ParseError::Missing("race"))?,
         region: draft.region,
         server: draft.server,
-        role: draft.role.ok_or(ParseError::Missing("role"))?,
-        specialization: draft
-            .specialization
-            .ok_or(ParseError::Missing("specialization"))?,
+        role,
+        specialization,
         scalar_options: draft.scalar_options,
         talents: draft.talents,
+        saved_talent_loadouts: draft.saved_talent_loadouts,
         equipped: draft.equipped,
         bag_items: draft.bag_items,
         actions: draft.actions,
         simulation: draft.simulation,
     })
+}
+
+fn looks_like_item_comment(comment: &str) -> bool {
+    comment
+        .rsplit_once(" (")
+        .and_then(|(_, suffix)| suffix.strip_suffix(')'))
+        .is_some_and(|item_level| {
+            !item_level.is_empty() && item_level.chars().all(|c| c.is_ascii_digit())
+        })
+}
+
+fn item_name_from_comment(comment: &str) -> String {
+    comment
+        .rsplit_once(" (")
+        .map_or(comment, |(name, _)| name)
+        .to_owned()
 }
 
 fn contains_channel_marker(line: &str) -> bool {
@@ -277,8 +323,8 @@ fn validate_retail_metadata(version: &str, toc: u32) -> Result<()> {
 
 fn parse_class(key: &str) -> Option<CharacterClass> {
     Some(match key {
-        "death_knight" => CharacterClass::DeathKnight,
-        "demon_hunter" => CharacterClass::DemonHunter,
+        "deathknight" | "death_knight" => CharacterClass::DeathKnight,
+        "demonhunter" | "demon_hunter" => CharacterClass::DemonHunter,
         "druid" => CharacterClass::Druid,
         "evoker" => CharacterClass::Evoker,
         "hunter" => CharacterClass::Hunter,
@@ -298,18 +344,18 @@ fn parse_gear_slot(key: &str) -> Option<GearSlot> {
     Some(match key {
         "head" => GearSlot::Head,
         "neck" => GearSlot::Neck,
-        "shoulders" => GearSlot::Shoulders,
+        "shoulder" | "shoulders" => GearSlot::Shoulders,
         "back" => GearSlot::Back,
         "chest" => GearSlot::Chest,
         "shirt" => GearSlot::Shirt,
         "tabard" => GearSlot::Tabard,
-        "wrists" => GearSlot::Wrists,
-        "hands" => GearSlot::Hands,
+        "wrist" | "wrists" => GearSlot::Wrists,
+        "hand" | "hands" => GearSlot::Hands,
         "waist" => GearSlot::Waist,
-        "legs" => GearSlot::Legs,
-        "feet" => GearSlot::Feet,
-        "finger1" => GearSlot::Finger1,
-        "finger2" => GearSlot::Finger2,
+        "leg" | "legs" => GearSlot::Legs,
+        "foot" | "feet" => GearSlot::Feet,
+        "finger1" | "ring1" => GearSlot::Finger1,
+        "finger2" | "ring2" => GearSlot::Finger2,
         "trinket1" => GearSlot::Trinket1,
         "trinket2" => GearSlot::Trinket2,
         "main_hand" => GearSlot::MainHand,
@@ -321,11 +367,14 @@ fn parse_gear_slot(key: &str) -> Option<GearSlot> {
 fn parse_item(slot: GearSlot, value: &str, line: usize) -> Result<Item> {
     let mut id = None;
     let mut options = BTreeMap::new();
-    for part in value
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-    {
+    for (index, part) in value.split(',').map(str::trim).enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if index == 0 && !part.contains('=') {
+            validate_item_name(part, line)?;
+            continue;
+        }
         let (key, value) = part.split_once('=').ok_or_else(|| ParseError::Invalid {
             line,
             message: format!("invalid item option: {part}"),
@@ -339,6 +388,11 @@ fn parse_item(slot: GearSlot, value: &str, line: usize) -> Result<Item> {
             if parsed == 0 || id.replace(parsed).is_some() {
                 return invalid(line, "item must contain one non-zero id");
             }
+        } else if key == "context" {
+            let _ = parse_number::<u32>(&value, line, "item context")?;
+            if options.insert(key.to_owned(), value).is_some() {
+                return invalid(line, format!("duplicate item option: {key}"));
+            }
         } else if options.insert(key.to_owned(), value).is_some() {
             return invalid(line, format!("duplicate item option: {key}"));
         }
@@ -349,6 +403,7 @@ fn parse_item(slot: GearSlot, value: &str, line: usize) -> Result<Item> {
             line,
             message: "item id is required".into(),
         })?,
+        name: None,
         options,
     })
 }
@@ -356,7 +411,9 @@ fn parse_item(slot: GearSlot, value: &str, line: usize) -> Result<Item> {
 fn is_item_option(key: &str) -> bool {
     matches!(
         key,
-        "id" | "enchant_id"
+        "id" | "enchant"
+            | "embellishment"
+            | "enchant_id"
             | "gem_id"
             | "bonus_id"
             | "gem_bonus_id"
@@ -366,8 +423,36 @@ fn is_item_option(key: &str) -> bool {
             | "content_tuning"
             | "redirected_base_stats"
             | "titan_disc_id"
+            | "context"
             | "ilevel"
     )
+}
+
+fn validate_item_name(value: &str, line: usize) -> Result<()> {
+    if value.len() > 128
+        || !value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '\'')
+        })
+    {
+        return invalid(line, "item name is not a safe SimulationCraft token");
+    }
+    Ok(())
+}
+
+fn inferred_role(specialization: &str) -> Role {
+    if matches!(
+        specialization,
+        "blood" | "vengeance" | "guardian" | "brewmaster" | "protection"
+    ) {
+        Role::Tank
+    } else if matches!(
+        specialization,
+        "restoration" | "preservation" | "mistweaver" | "holy" | "discipline"
+    ) {
+        Role::Heal
+    } else {
+        Role::Attack
+    }
 }
 
 fn is_simulation_option(key: &str) -> bool {
@@ -455,6 +540,8 @@ fn is_scalar_option(key: &str) -> bool {
             | "load_default_gear"
             | "source"
             | "default_actions"
+            | "timeofday"
+            | "warlock.default_pet"
     )
 }
 
@@ -639,6 +726,71 @@ mod tests {
             "alchemy=100/blacksmithing=100"
         );
         assert_eq!(profile.talents["omnium_talents"], "123:1/456:2");
+    }
+
+    #[test]
+    fn accepts_raidbots_dps_role_aliases() {
+        for role in ["melee", "spell", "hybrid", "dps"] {
+            let profile = parse_simc_file(&format!(
+                "rogue=Character\nlevel=90\nrace=void_elf\nregion=kr\nserver=azshara\nrole={role}\nspec=subtlety\ntalents=CUQAAAAAAAA\nhead=,id=250006,bonus_id=6652/12667,context=35\nshoulder=,id=250004,context=35\n"
+            ))
+            .unwrap();
+            assert_eq!(profile.role, Role::Attack);
+            assert_eq!(profile.equipped[&GearSlot::Head].options["context"], "35");
+            assert_eq!(profile.equipped[&GearSlot::Shoulders].id, 250004);
+        }
+    }
+
+    #[test]
+    fn preserves_raidbots_item_names_and_saved_talent_loadouts() {
+        let profile = parse_simc_file(
+            "# Raidbots-generated SimC input\nrogue=Character\nlevel=90\nrace=void_elf\nrole=melee\nspec=subtlety\ntalents=ACTIVE\n\n# Saved Loadout: Dungeon\n# talents=SAVED\n\n# Masquerade of the Grim Jest (289)\nhead=,id=250006,context=35\n",
+        )
+        .unwrap();
+        assert_eq!(
+            profile.equipped[&GearSlot::Head].name.as_deref(),
+            Some("Masquerade of the Grim Jest")
+        );
+        assert_eq!(
+            profile.saved_talent_loadouts,
+            vec![TalentLoadout {
+                name: "Dungeon".into(),
+                value: "SAVED".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn accepts_the_official_simc_profile_shape_and_aliases() {
+        let profile = parse_simc_file(
+            "deathknight=Official\nlevel=90\nrace=void_elf\nrole=auto\nspec=blood\ntimeofday=night\nshoulders=sample_shoulders,id=250004,ilevel=289,embellishment=sample\nwrists=sample_bracers,id=244576,crafted_stats=32/49,enchant=sample\nring1=sample_ring,id=251217,gem_id=240908\n",
+        )
+        .unwrap();
+
+        assert_eq!(profile.class, CharacterClass::DeathKnight);
+        assert_eq!(profile.role, Role::Tank);
+        assert_eq!(profile.scalar_options["timeofday"], "night");
+        assert_eq!(profile.equipped[&GearSlot::Shoulders].id, 250004);
+        assert_eq!(
+            profile.equipped[&GearSlot::Wrists].options["enchant"],
+            "sample"
+        );
+        assert_eq!(profile.equipped[&GearSlot::Finger1].id, 251217);
+    }
+
+    #[test]
+    fn infers_role_when_the_official_optional_field_is_absent() {
+        let healer = parse_simc_file(
+            "priest=Healer\nlevel=90\nrace=human\nspec=discipline\nload_default_gear=1\n",
+        )
+        .unwrap();
+        let damage = parse_simc_file(
+            "mage=Damage\nlevel=90\nrace=human\nspec=arcane\nload_default_gear=1\n",
+        )
+        .unwrap();
+
+        assert_eq!(healer.role, Role::Heal);
+        assert_eq!(damage.role, Role::Attack);
     }
 
     #[test]

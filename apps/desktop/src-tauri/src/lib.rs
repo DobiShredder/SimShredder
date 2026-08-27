@@ -108,11 +108,18 @@ fn open_wowhead_reference(
 struct RuntimeView {
     state: &'static str,
     active: Option<RuntimeRecord>,
+    active_data_date: Option<String>,
     installed: Vec<RuntimeRecord>,
     available_version: String,
     available_build: String,
     update_available: bool,
     diagnostic: Option<String>,
+}
+
+struct CatalogContext {
+    roots: Vec<TrustedCatalogKey>,
+    now: u64,
+    target: (&'static str, &'static str),
 }
 
 fn initialize_storage(app: &tauri::AppHandle) -> Result<StorageState, String> {
@@ -187,7 +194,7 @@ fn configured_paths(app: &tauri::AppHandle) -> Result<StoragePathsView, String> 
     storage_paths::load(&state.control_root, &state.defaults)
 }
 
-fn available_manifest(manager: &RuntimeManager) -> Result<RuntimeManifest, String> {
+fn catalog_context() -> Result<CatalogContext, String> {
     let roots: Vec<TrustedCatalogKey> = serde_json::from_str(include_str!(
         "../resources/runtime-catalog-trust-roots.json"
     ))
@@ -203,26 +210,13 @@ fn available_manifest(manager: &RuntimeManager) -> Result<RuntimeManifest, Strin
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     compile_error!("SimShredder desktop only supports macOS and Windows");
 
-    let catalog = match download_production_catalog().and_then(|bytes| {
-        manager.verify_and_accept_catalog_for_target(&bytes, &roots, now, target.0, target.1)
-    }) {
-        Ok(catalog) => catalog,
-        Err(_) => match manager.accepted_catalog(&roots, now) {
-            Ok(Some(catalog)) => catalog,
-            Ok(None) => manager
-                .verify_and_accept_catalog_for_target(
-                    include_bytes!("../resources/runtime-catalog.json"),
-                    &roots,
-                    now,
-                    target.0,
-                    target.1,
-                )
-                .map_err(|error| format!("bundled runtime catalog was rejected: {error}"))?,
-            Err(error) => {
-                return Err(format!("cached runtime catalog was rejected: {error}"));
-            }
-        },
-    };
+    Ok(CatalogContext { roots, now, target })
+}
+
+fn manifest_from_catalog(
+    catalog: simshredder_runtime_manager::VerifiedCatalog,
+    target: (&str, &str),
+) -> Result<RuntimeManifest, String> {
     catalog
         .payload
         .manifests
@@ -234,6 +228,56 @@ fn available_manifest(manager: &RuntimeManager) -> Result<RuntimeManifest, Strin
                 target.0, target.1
             )
         })
+}
+
+fn cached_available_manifest(manager: &RuntimeManager) -> Result<RuntimeManifest, String> {
+    let context = catalog_context()?;
+    let catalog = match manager.accepted_catalog(&context.roots, context.now) {
+        Ok(Some(catalog)) => catalog,
+        Ok(None) => manager
+            .verify_and_accept_catalog_for_target(
+                include_bytes!("../resources/runtime-catalog.json"),
+                &context.roots,
+                context.now,
+                context.target.0,
+                context.target.1,
+            )
+            .map_err(|error| format!("bundled runtime catalog was rejected: {error}"))?,
+        Err(error) => return Err(format!("cached runtime catalog was rejected: {error}")),
+    };
+    manifest_from_catalog(catalog, context.target)
+}
+
+fn refreshed_available_manifest(manager: &RuntimeManager) -> Result<RuntimeManifest, String> {
+    let context = catalog_context()?;
+
+    let catalog = match download_production_catalog().and_then(|bytes| {
+        manager.verify_and_accept_catalog_for_target(
+            &bytes,
+            &context.roots,
+            context.now,
+            context.target.0,
+            context.target.1,
+        )
+    }) {
+        Ok(catalog) => catalog,
+        Err(_) => match manager.accepted_catalog(&context.roots, context.now) {
+            Ok(Some(catalog)) => catalog,
+            Ok(None) => manager
+                .verify_and_accept_catalog_for_target(
+                    include_bytes!("../resources/runtime-catalog.json"),
+                    &context.roots,
+                    context.now,
+                    context.target.0,
+                    context.target.1,
+                )
+                .map_err(|error| format!("bundled runtime catalog was rejected: {error}"))?,
+            Err(error) => {
+                return Err(format!("cached runtime catalog was rejected: {error}"));
+            }
+        },
+    };
+    manifest_from_catalog(catalog, context.target)
 }
 
 fn manager(app: &tauri::AppHandle) -> Result<RuntimeManager, String> {
@@ -360,8 +404,23 @@ fn spawn_dispatch(
     Ok(())
 }
 
-fn view_from_manager(manager: &RuntimeManager) -> Result<RuntimeView, String> {
-    let manifest = available_manifest(manager)?;
+fn simc_data_date(hotfix: Option<&str>) -> Option<String> {
+    let date = hotfix?.split('/').next()?;
+    let bytes = date.as_bytes();
+    (bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit()))
+    .then(|| date.to_owned())
+}
+
+fn view_from_manager(
+    manager: &RuntimeManager,
+    manifest: RuntimeManifest,
+) -> Result<RuntimeView, String> {
     let state = manager.state().map_err(|error| error.to_string())?;
     let active = state
         .active_id
@@ -370,11 +429,15 @@ fn view_from_manager(manager: &RuntimeManager) -> Result<RuntimeView, String> {
         .cloned();
     let available_id = format!("{}-{}", manifest.simc_version, manifest.build);
     let doctor = manager.doctor_active();
-    let (status, diagnostic) = match doctor {
-        Ok(Some(RuntimeDoctor { healthy: true, .. })) => ("ready", None),
-        Ok(Some(_)) => ("damaged", Some("runtime health check failed".into())),
-        Ok(None) => ("missing", None),
-        Err(error) => ("damaged", Some(error.to_string())),
+    let (status, diagnostic, active_data_date) = match doctor {
+        Ok(Some(RuntimeDoctor {
+            healthy: true,
+            identity,
+            ..
+        })) => ("ready", None, simc_data_date(identity.hotfix.as_deref())),
+        Ok(Some(_)) => ("damaged", Some("runtime health check failed".into()), None),
+        Ok(None) => ("missing", None, None),
+        Err(error) => ("damaged", Some(error.to_string()), None),
     };
     Ok(RuntimeView {
         state: status,
@@ -382,6 +445,7 @@ fn view_from_manager(manager: &RuntimeManager) -> Result<RuntimeView, String> {
             .as_ref()
             .is_some_and(|record| record.id != available_id),
         active,
+        active_data_date,
         installed: state.runtimes,
         available_version: manifest.simc_version,
         available_build: manifest.build,
@@ -393,21 +457,33 @@ fn view_from_manager(manager: &RuntimeManager) -> Result<RuntimeView, String> {
 async fn runtime_status(app: tauri::AppHandle) -> Result<RuntimeView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let manager = manager(&app)?;
-        view_from_manager(&manager)
+        let manifest = cached_available_manifest(&manager)?;
+        view_from_manager(&manager, manifest)
     })
     .await
     .map_err(|error| format!("runtime status task failed: {error}"))?
 }
 
 #[tauri::command]
+async fn runtime_check_updates(app: tauri::AppHandle) -> Result<RuntimeView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = manager(&app)?;
+        let manifest = refreshed_available_manifest(&manager)?;
+        view_from_manager(&manager, manifest)
+    })
+    .await
+    .map_err(|error| format!("runtime update check task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn runtime_install_latest(app: tauri::AppHandle) -> Result<RuntimeView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let manager = manager(&app)?;
-        let manifest = available_manifest(&manager)?;
+        let manifest = refreshed_available_manifest(&manager)?;
         manager
             .install_and_activate(&manifest)
             .map_err(|error| error.to_string())?;
-        view_from_manager(&manager)
+        view_from_manager(&manager, manifest)
     })
     .await
     .map_err(|error| format!("runtime installation task failed: {error}"))?
@@ -418,7 +494,8 @@ async fn runtime_rollback(app: tauri::AppHandle) -> Result<RuntimeView, String> 
     tauri::async_runtime::spawn_blocking(move || {
         let manager = manager(&app)?;
         manager.rollback().map_err(|error| error.to_string())?;
-        view_from_manager(&manager)
+        let manifest = cached_available_manifest(&manager)?;
+        view_from_manager(&manager, manifest)
     })
     .await
     .map_err(|error| format!("runtime rollback task failed: {error}"))?
@@ -825,6 +902,7 @@ pub fn run() {
             storage_paths_save,
             storage_paths_reset,
             runtime_status,
+            runtime_check_updates,
             runtime_install_latest,
             runtime_rollback,
             icon_cache_status,
@@ -905,6 +983,16 @@ mod tests {
             "https://www.wowhead.com/spell=184367"
         );
         assert!(wowhead_reference_url(WowheadReferenceKind::Item, 0).is_err());
+    }
+
+    #[test]
+    fn simc_hotfix_exposes_only_an_iso_game_data_date() {
+        assert_eq!(
+            simc_data_date(Some("2026-08-25/69497")).as_deref(),
+            Some("2026-08-25")
+        );
+        assert_eq!(simc_data_date(None), None);
+        assert_eq!(simc_data_date(Some("August 25/69497")), None);
     }
 
     #[cfg(unix)]

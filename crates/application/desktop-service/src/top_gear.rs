@@ -11,9 +11,9 @@ use simshredder_job_runner::{BatchInput, CancellationToken, EnqueueRequest, Pers
 use simshredder_runtime_manager::RuntimeDoctor;
 use simshredder_top_gear::{
     ActionState, BudgetSnapshot, EvaluatedLoadout, ItemVariant, Loadout, PlannedAction,
-    RankedLoadout, RejectionBreakdown, RuleManifest, SearchPreview, SearchRequest, WeaponKind,
-    build_action_states, build_profileset_stage_input, derive_action_plan, generate_loadouts,
-    parse_profileset_results, rank_results,
+    ProfileOptionVariant, RankedLoadout, RejectionBreakdown, RuleManifest, SearchPreview,
+    SearchRequest, TalentVariant, WeaponKind, build_action_states, build_profileset_stage_input,
+    derive_action_plan, generate_loadouts, parse_profileset_results, rank_results,
 };
 
 use super::{
@@ -30,6 +30,16 @@ const MAX_STAGE_ITERATIONS: u32 = 10_000_000;
 pub struct TopGearRequest {
     pub quick: QuickSimRequest,
     pub variants: Vec<ItemVariant>,
+    #[serde(default)]
+    pub talent_loadouts: Vec<TalentVariant>,
+    #[serde(default)]
+    pub profile_options: BTreeMap<String, Vec<ProfileOptionVariant>>,
+    #[serde(default)]
+    pub locked_slots: std::collections::BTreeSet<simshredder_domain::GearSlot>,
+    #[serde(default)]
+    pub minimum_set_pieces: BTreeMap<String, u8>,
+    #[serde(default)]
+    pub catalyst_charges: u8,
     pub balances: BTreeMap<String, u32>,
     pub reserves: BTreeMap<String, u32>,
     pub currency_confirmed_at_unix_seconds: u64,
@@ -55,6 +65,8 @@ pub struct PreparedTopGear {
     pub rejections: RejectionBreakdown,
     pub generated_input: String,
     pub variants: Vec<ItemVariant>,
+    pub talent_loadouts: Vec<TalentVariant>,
+    pub profile_options: BTreeMap<String, Vec<ProfileOptionVariant>>,
     pub loadouts: Vec<Loadout>,
 }
 
@@ -126,18 +138,32 @@ impl DesktopService {
         } else {
             request.variants.clone()
         };
-        let candidates = group_candidates(&variants);
+        let talent_loadouts = if request.talent_loadouts.is_empty() {
+            default_talent_loadouts(&prepared.profile)
+        } else {
+            request.talent_loadouts.clone()
+        };
+        let profile_options = if request.profile_options.is_empty() {
+            default_profile_options(&prepared.profile)
+        } else {
+            request.profile_options.clone()
+        };
+        let candidates = group_candidates(&variants, &request.locked_slots);
         let preview = generate_loadouts(
             &rules,
             &SearchRequest {
                 expected_rule_revision: request.rule_revision.clone(),
                 game_build: request.game_build,
                 candidates,
+                talent_candidates: talent_loadouts.clone(),
+                option_candidates: profile_options.clone(),
                 budget: BudgetSnapshot {
                     balances: request.balances.clone(),
                     reserves: request.reserves.clone(),
                     confirmed_at_unix_seconds: request.currency_confirmed_at_unix_seconds,
                 },
+                minimum_set_pieces: request.minimum_set_pieces.clone(),
+                catalyst_charges: request.catalyst_charges,
                 max_combinations: request.combination_limit,
             },
         )?;
@@ -163,6 +189,8 @@ impl DesktopService {
                 Error::InvalidRequest("generated Top Gear input is not UTF-8".into())
             })?,
             variants,
+            talent_loadouts,
+            profile_options,
             loadouts: preview.loadouts,
         })
     }
@@ -177,7 +205,7 @@ impl DesktopService {
         let baseline_key = preview
             .loadouts
             .iter()
-            .find(|loadout| loadout.changed_slots == 0)
+            .find(|loadout| loadout.changed_slots == 0 && loadout.changed_options == 0)
             .ok_or_else(|| Error::InvalidRequest("prepared Top Gear baseline is missing".into()))?
             .key
             .clone();
@@ -458,6 +486,28 @@ impl DesktopService {
         };
         let mut final_prepared = prepare_request(&session.request.quick)?.0;
         final_prepared.profile.simulation.iterations = session.request.high_iterations;
+        if !winner.talent.option.is_empty() {
+            final_prepared
+                .profile
+                .talents
+                .insert(winner.talent.option.clone(), winner.talent.value.clone());
+        }
+        for candidate in winner.profile_options.values() {
+            if candidate.value.is_empty() {
+                continue;
+            }
+            if candidate.option == "omnium_talents" {
+                final_prepared
+                    .profile
+                    .talents
+                    .insert(candidate.option.clone(), candidate.value.clone());
+            } else {
+                final_prepared
+                    .profile
+                    .scalar_options
+                    .insert(candidate.option.clone(), candidate.value.clone());
+            }
+        }
         final_prepared.profile.equipped = winner
             .items
             .iter()
@@ -467,6 +517,7 @@ impl DesktopService {
                     Item {
                         slot: *slot,
                         id: variant.source_item_id,
+                        name: variant.display_name.clone(),
                         options: variant.simc_options.clone(),
                     },
                 )
@@ -630,6 +681,7 @@ fn default_variants(profile: &simshredder_domain::Profile) -> Vec<ItemVariant> {
             key: format!("worn-{}-{}", slot.simc_token(), item.id),
             source_item_id: item.id,
             slot: *slot,
+            display_name: item.name.clone(),
             rank: 0,
             gem_ids: parse_gems(item.options.get("gem_id")),
             enchant_id: item
@@ -640,8 +692,11 @@ fn default_variants(profile: &simshredder_domain::Profile) -> Vec<ItemVariant> {
             cost: BTreeMap::new(),
             actions: Vec::new(),
             unique_groups: Default::default(),
+            set_groups: Default::default(),
             weapon_kind: WeaponKind::None,
             embellishment: false,
+            catalyst: false,
+            enabled: true,
             changed: false,
         });
     }
@@ -650,6 +705,7 @@ fn default_variants(profile: &simshredder_domain::Profile) -> Vec<ItemVariant> {
             key: format!("bag-{}-{}-{index}", bag.item.slot.simc_token(), bag.item.id),
             source_item_id: bag.item.id,
             slot: bag.item.slot,
+            display_name: bag.item.name.clone().or_else(|| bag.name.clone()),
             rank: 0,
             gem_ids: parse_gems(bag.item.options.get("gem_id")),
             enchant_id: bag
@@ -661,8 +717,11 @@ fn default_variants(profile: &simshredder_domain::Profile) -> Vec<ItemVariant> {
             cost: BTreeMap::new(),
             actions: Vec::new(),
             unique_groups: Default::default(),
+            set_groups: Default::default(),
             weapon_kind: WeaponKind::None,
             embellishment: false,
+            catalyst: false,
+            enabled: true,
             changed: true,
         });
     }
@@ -677,11 +736,81 @@ fn parse_gems(value: Option<&String>) -> Vec<u32> {
         .collect()
 }
 
+fn default_talent_loadouts(profile: &simshredder_domain::Profile) -> Vec<TalentVariant> {
+    let (option, value) = profile
+        .talents
+        .iter()
+        .find(|(key, _)| key.as_str() == "talents")
+        .or_else(|| profile.talents.iter().next())
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .unwrap_or_default();
+    let mut loadouts = vec![TalentVariant {
+        key: "active".into(),
+        label: "Active".into(),
+        option: option.clone(),
+        value: value.clone(),
+        changed: false,
+        enabled: true,
+    }];
+    for (index, saved) in profile.saved_talent_loadouts.iter().enumerate() {
+        if saved.value != value {
+            loadouts.push(TalentVariant {
+                key: format!("saved-{index}"),
+                label: saved.name.clone(),
+                option: option.clone(),
+                value: saved.value.clone(),
+                changed: true,
+                enabled: false,
+            });
+        }
+    }
+    loadouts
+}
+
+fn default_profile_options(
+    profile: &simshredder_domain::Profile,
+) -> BTreeMap<String, Vec<ProfileOptionVariant>> {
+    [
+        "food",
+        "flask",
+        "potion",
+        "augmentation",
+        "temporary_enchant",
+        "omnium_talents",
+    ]
+    .into_iter()
+    .map(|option| {
+        let value = if option == "omnium_talents" {
+            profile.talents.get(option)
+        } else {
+            profile.scalar_options.get(option)
+        }
+        .cloned()
+        .unwrap_or_default();
+        (
+            option.to_owned(),
+            vec![ProfileOptionVariant {
+                key: format!("active-{option}"),
+                label: "Active".into(),
+                option: option.to_owned(),
+                value,
+                changed: false,
+                enabled: true,
+            }],
+        )
+    })
+    .collect()
+}
+
 fn group_candidates(
     variants: &[ItemVariant],
+    locked_slots: &std::collections::BTreeSet<simshredder_domain::GearSlot>,
 ) -> BTreeMap<simshredder_domain::GearSlot, Vec<ItemVariant>> {
     let mut grouped = BTreeMap::new();
     for variant in variants {
+        if !variant.enabled || (locked_slots.contains(&variant.slot) && variant.changed) {
+            continue;
+        }
         grouped
             .entry(variant.slot)
             .or_insert_with(Vec::new)
@@ -694,7 +823,7 @@ fn unique_baseline(preview: &SearchPreview) -> Result<&Loadout> {
     let mut baseline = preview
         .loadouts
         .iter()
-        .filter(|loadout| loadout.changed_slots == 0);
+        .filter(|loadout| loadout.changed_slots == 0 && loadout.changed_options == 0);
     let first = baseline.next().ok_or_else(|| {
         Error::InvalidRequest("Top Gear candidates must include the worn baseline".into())
     })?;
@@ -774,6 +903,7 @@ mod tests {
             key: key.into(),
             source_item_id: 154029,
             slot: GearSlot::Head,
+            display_name: None,
             rank: 1,
             gem_ids: Vec::new(),
             enchant_id: None,
@@ -785,8 +915,11 @@ mod tests {
             cost: BTreeMap::from([("crest".into(), u32::from(changed) * 2)]),
             actions: Vec::new(),
             unique_groups: BTreeSet::new(),
+            set_groups: BTreeSet::new(),
             weapon_kind: WeaponKind::None,
             embellishment: false,
+            catalyst: false,
+            enabled: true,
             changed,
         };
         TopGearRequest {
@@ -800,8 +933,14 @@ mod tests {
                 desired_targets: 1,
                 fight_style: "Patchwerk".into(),
                 cpu_preset: CpuChoice::Balanced,
+                analysis: crate::AnalysisOptions::default(),
             },
             variants: vec![item("worn", false), item("upgraded", true)],
+            talent_loadouts: Vec::new(),
+            profile_options: BTreeMap::new(),
+            locked_slots: BTreeSet::new(),
+            minimum_set_pieces: BTreeMap::new(),
+            catalyst_charges: 0,
             balances: BTreeMap::from([("crest".into(), 10)]),
             reserves: BTreeMap::from([("crest".into(), 2)]),
             currency_confirmed_at_unix_seconds: 1,
@@ -824,6 +963,26 @@ mod tests {
         assert_eq!(preview.execution_count, 4);
         assert!(preview.generated_input.contains("profileset."));
         assert!(preview.generated_input.contains("iterations=100\n"));
+    }
+
+    #[test]
+    fn raidbots_profile_populates_named_items_and_saved_talent_dimensions() {
+        let temporary = tempfile::tempdir().unwrap();
+        let service = DesktopService::open(temporary.path()).unwrap();
+        let mut request = request();
+        request.quick.source = "# Raidbots-generated SimC input\nrogue=Character\nlevel=90\nrace=void_elf\nrole=melee\nspec=subtlety\ntalents=ACTIVE\n# Saved Loadout: Dungeon\n# talents=SAVED\n# Named Helm (289)\nhead=,id=250006,context=35\n".into();
+        request.variants.clear();
+        request.talent_loadouts.clear();
+        request.profile_options.clear();
+        let preview = service.prepare_top_gear(&request).unwrap();
+        assert_eq!(
+            preview.variants[0].display_name.as_deref(),
+            Some("Named Helm")
+        );
+        assert_eq!(preview.talent_loadouts.len(), 2);
+        assert_eq!(preview.talent_loadouts[1].label, "Dungeon");
+        assert!(!preview.talent_loadouts[1].enabled);
+        assert_eq!(preview.raw_combinations, 1);
     }
 
     #[test]

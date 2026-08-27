@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, Download, FolderCog, FolderOpen, Image, Ro
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  formatRuntimeDataDate,
   runtimeInstallLatest,
   runtimeRollback,
   runtimeStatus,
@@ -13,9 +14,12 @@ import { storagePathsGet, storagePathsReset, storagePathsSave, type StoragePaths
 
 type Operation = "checking" | "installing" | "rollingBack" | null;
 
-export function SettingsPage() {
-  const { t } = useTranslation();
-  const [runtime, setRuntime] = useState<RuntimeView | null>(null);
+export function SettingsPage({ initialRuntime, onRuntimeChange }: {
+  initialRuntime: RuntimeView | null;
+  onRuntimeChange: (runtime: RuntimeView) => void;
+}) {
+  const { t, i18n } = useTranslation();
+  const [runtime, setRuntime] = useState<RuntimeView | null>(initialRuntime);
   const [operation, setOperation] = useState<Operation>("checking");
   const [error, setError] = useState<string | null>(null);
   const [icons, setIcons] = useState<IconCacheStatus | null>(null);
@@ -27,17 +31,24 @@ export function SettingsPage() {
   const [storageError, setStorageError] = useState<string | null>(null);
   const [storageSaved, setStorageSaved] = useState(false);
 
+  const publishRuntime = useCallback((next: RuntimeView) => {
+    setRuntime(next);
+    onRuntimeChange(next);
+  }, [onRuntimeChange]);
+
   const refresh = useCallback(async () => {
     setOperation("checking");
     setError(null);
     try {
-      setRuntime(await runtimeStatus());
+      publishRuntime(await runtimeStatus());
     } catch (reason) {
       setError(String(reason));
     } finally {
       setOperation(null);
     }
-  }, []);
+  }, [publishRuntime]);
+
+  useEffect(() => setRuntime(initialRuntime), [initialRuntime]);
 
   useEffect(() => {
     void refresh();
@@ -86,7 +97,7 @@ export function SettingsPage() {
         setIconError(String(reason));
       }
       try {
-        setRuntime(await runtimeStatus());
+        publishRuntime(await runtimeStatus());
       } catch (reason) {
         setError(String(reason));
       }
@@ -112,7 +123,7 @@ export function SettingsPage() {
         setIconError(String(reason));
       }
       try {
-        setRuntime(await runtimeStatus());
+        publishRuntime(await runtimeStatus());
       } catch (reason) {
         setError(String(reason));
       }
@@ -128,7 +139,7 @@ export function SettingsPage() {
     setError(null);
     try {
       const next = nextOperation === "installing" ? await runtimeInstallLatest() : await runtimeRollback();
-      setRuntime(next);
+      publishRuntime(next);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -145,6 +156,7 @@ export function SettingsPage() {
     : runtime?.state === "damaged"
       ? t("runtime.damaged")
       : t("runtime.missing");
+  const activeDataDate = formatRuntimeDataDate(runtime?.activeDataDate ?? null, i18n.resolvedLanguage ?? "en");
   const formatBytes = (bytes: number) => `${(bytes / (1024 * 1024)).toLocaleString(undefined, { maximumFractionDigits: 1 })} MiB`;
 
   return (
@@ -181,6 +193,10 @@ export function SettingsPage() {
           <div>
             <dt>{t("runtime.active")}</dt>
             <dd>{activeId ?? t("runtime.none")}</dd>
+          </div>
+          <div>
+            <dt>{t("runtime.dataDate")}</dt>
+            <dd>{activeDataDate ?? t("runtime.unknownDate")}</dd>
           </div>
         </dl>
 

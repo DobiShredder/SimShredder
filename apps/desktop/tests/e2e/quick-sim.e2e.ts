@@ -154,6 +154,17 @@ describe("supported desktop shell", () => {
     await browser.execute(() => (document.activeElement as HTMLElement | null)?.blur());
     expect(await browser.checkScreen(`quick-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(2);
 
+    await (await $("summary=고급 옵션")).click();
+    await expect($("//label[contains(.,'대상 레벨')]//input")).toBeDisplayed();
+    await expect($("//label[contains(.,'사용자 지정 APL')]//textarea")).toBeDisplayed();
+    await browser.execute(() => {
+      const advanced = document.querySelector<HTMLElement>(".advanced-options");
+      if (advanced) window.scrollBy({ top: advanced.getBoundingClientRect().top - 121, behavior: "auto" });
+      (document.activeElement as HTMLElement | null)?.blur();
+    });
+    expect(await browser.checkScreen(`quick-advanced-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(2);
+    await (await $("summary=고급 옵션")).click();
+
     await browser.execute(() => {
       document.documentElement.style.fontSize = "200%";
     });
@@ -206,6 +217,10 @@ describe("supported desktop shell", () => {
     const topGearHeading = await $("h1=장비와 강화 비교");
     await topGearHeading.waitForDisplayed({ timeout: 60_000 });
     await expect($("h2=정확한 실행 미리보기")).toBeDisplayed();
+    await expect($("h2=장비 후보")).toBeDisplayed();
+    await expect($("h2=소모품 및 Omnium Folio")).toBeDisplayed();
+    await expect($("h2=특성 로드아웃")).toBeDisplayed();
+    await expect($("nav[aria-label='장비 최적화 섹션']")).toBeDisplayed();
     const itemTooltipContract = await browser.execute(() => {
       const trigger = document.querySelector<HTMLButtonElement>(".semantic-icon-item");
       const panel = trigger?.nextElementSibling as HTMLElement | null;
@@ -219,6 +234,9 @@ describe("supported desktop shell", () => {
       window.scrollTo({ top: 0, left: 0, behavior: "auto" });
     });
     expect(await browser.checkScreen(`top-gear-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(3);
+    await browser.execute(() => document.querySelector("#optimizer-consumables")?.scrollIntoView({ block: "start", behavior: "auto" }));
+    await expect($("h2=소모품 및 Omnium Folio")).toBeDisplayed();
+    expect(await browser.checkScreen(`top-gear-options-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(3);
 
     if (mode === "live") {
       await (await $("//label[contains(.,'넓은 탐색 반복 횟수')]//input")).setValue("100");

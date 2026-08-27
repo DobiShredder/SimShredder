@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import axe from "axe-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,6 +20,7 @@ vi.mock("echarts/renderers", () => ({ CanvasRenderer: {} }));
 const missingRuntime = {
   state: "missing",
   active: null,
+  activeDataDate: null,
   installed: [],
   availableVersion: "1210-01",
   availableBuild: "3487fce",
@@ -30,6 +31,7 @@ const missingRuntime = {
 const readyRuntime = {
   ...missingRuntime,
   state: "ready",
+  activeDataDate: "2026-08-25",
   active: {
     id: "1210-01-3487fce",
     simcVersion: "1210-01",
@@ -99,9 +101,20 @@ const topGearPrepared = {
   executionCount: 4,
   finalistCount: 2,
   estimated: false,
-  rejections: { dominatedVariants: 0, socketLimit: 0, enchantSlot: 0, uniqueEquipped: 0, embellishmentLimit: 0, weaponConstraint: 0, budget: 0, symmetricDuplicate: 0 },
+  rejections: { dominatedVariants: 0, socketLimit: 0, enchantSlot: 0, uniqueEquipped: 0, embellishmentLimit: 0, weaponConstraint: 0, budget: 0, symmetricDuplicate: 0, minimumSetBonus: 0, catalystLimit: 0 },
   generatedInput: "warrior=Core\nprofileset.0123abcd=default_actions=1\n",
-  variants: [{ key: "worn-head-154029", sourceItemId: 154029, slot: "head", rank: 0, gemIds: [], enchantId: null, simcOptions: {}, cost: {}, actions: [], uniqueGroups: [], weaponKind: "none", embellishment: false, changed: false }],
+  variants: [
+    { key: "worn-head-154029", sourceItemId: 154029, slot: "head", displayName: "Worn Helm", rank: 0, gemIds: [], enchantId: null, simcOptions: {}, cost: {}, actions: [], uniqueGroups: [], setGroups: [], weaponKind: "none", embellishment: false, catalyst: false, enabled: true, changed: false },
+    { key: "bag-head-154030", sourceItemId: 154030, slot: "head", displayName: "Candidate Helm", rank: 0, gemIds: [], enchantId: null, simcOptions: {}, cost: {}, actions: [], uniqueGroups: [], setGroups: [], weaponKind: "none", embellishment: false, catalyst: false, enabled: true, changed: true },
+  ],
+  talentLoadouts: [
+    { key: "active", label: "Active", option: "talents", value: "ACTIVE", changed: false, enabled: true },
+    { key: "saved-0", label: "Dungeon", option: "talents", value: "SAVED", changed: true, enabled: false },
+  ],
+  profileOptions: {
+    food: [{ key: "active-food", label: "Active", option: "food", value: "", changed: false, enabled: true }],
+    omnium_talents: [{ key: "active-omnium", label: "Active", option: "omnium_talents", value: "", changed: false, enabled: true }],
+  },
   loadouts: [],
 } as const;
 
@@ -121,7 +134,7 @@ const topGearResultFixture = {
   sessionId: "tg-test",
   baselineKey: "baseline",
   ruleRevision: "12.1.0-69465-v1",
-  ranked: [{ loadout: { key: "winner", items: {}, cost: { crest: 5 }, changedSlots: 1 }, mean: 123500, meanError: 50, delta: 500, combinedError: 70, equivalentToBaseline: false, paretoOptimal: true, rank: 1 }],
+  ranked: [{ loadout: { key: "winner", items: {}, cost: { crest: 5 }, changedSlots: 1, changedOptions: 0, talent: { key: "active", label: "Active", option: "talents", value: "ACTIVE", changed: false, enabled: true }, profileOptions: {} }, mean: 123500, meanError: 50, delta: 500, combinedError: 70, equivalentToBaseline: false, paretoOptimal: true, rank: 1 }],
   lowJobId: 7,
   highJobId: 9,
   actionJobId: null,
@@ -185,6 +198,7 @@ describe("application shell", () => {
     mockInvoke.mockImplementation((command: string, arguments_: unknown) => {
       if (command === "runtime_install_latest") return Promise.resolve(readyRuntime);
       if (command === "runtime_status") return Promise.resolve(runtimeStatusResult);
+      if (command === "runtime_check_updates") return Promise.resolve(runtimeStatusResult);
       if (command === "icon_cache_status") return Promise.resolve(iconStatus);
       if (command === "icon_cache_clear") {
         iconStatus = emptyIconStatus;
@@ -308,7 +322,7 @@ describe("application shell", () => {
     await user.click(screen.getByRole("button", { name: "Review profile" }));
     expect(await screen.findByRole("heading", { name: "Review simulation input" })).toBeVisible();
     expect(mockInvoke).toHaveBeenCalledWith("character_profile_save_import", {
-      request: expect.objectContaining({ source: "warrior=Core", iterations: 10_000 }),
+      request: expect.objectContaining({ source: "warrior=Core", format: "simcFile", iterations: 10_000 }),
     });
 
     await user.click(screen.getByRole("button", { name: "Profile" }));
@@ -329,6 +343,58 @@ describe("application shell", () => {
     expect(await screen.findByRole("heading", { name: "Review simulation input" })).toBeVisible();
   });
 
+  it("detects AddOn headers while treating Raidbots text as a regular simc profile", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Profile" }));
+    const source = screen.getByRole("textbox", { name: "Profile source" });
+    await user.type(source, "# Raidbots-generated SimC input\nrogue=Character");
+    expect(screen.getByRole("radio", { name: ".simc file" })).toBeChecked();
+
+    await user.clear(source);
+    await user.type(source, "# SimC Addon 12.1.0-01\n# WoW 12.1.0.69497, TOC 120100\nrogue=Character");
+    expect(screen.getByRole("radio", { name: "AddOn export" })).toBeChecked();
+  });
+
+  it("shows core analysis controls and keeps deep SimC options collapsed", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Profile" }));
+    await user.type(screen.getByRole("textbox", { name: "Profile source" }), "warrior=Core");
+    await user.click(screen.getByRole("button", { name: "Review profile" }));
+    expect(await screen.findByRole("heading", { name: "Simulation settings" })).toBeVisible();
+
+    expect(screen.getByRole("radio", { name: "Fixed iterations" })).toBeChecked();
+    expect(screen.getByLabelText(/Maximum fight length/)).toBeVisible();
+    expect(screen.getByLabelText("Targets")).toBeVisible();
+    expect(screen.getByLabelText("Fight style")).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: /Full raid buffs/ })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /Bloodlust/ })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /Profile consumables/ })).toBeChecked();
+    expect(screen.getByLabelText("Target level")).not.toBeVisible();
+
+    await user.click(screen.getByText("Advanced options"));
+    expect(screen.getByLabelText("Target level")).toBeVisible();
+    expect(screen.getByLabelText(/World latency/)).toBeVisible();
+    expect(screen.getByLabelText(/Custom APL/)).toBeVisible();
+    expect(screen.getByLabelText(/Custom SimC options/)).toBeVisible();
+
+    await user.click(screen.getByRole("radio", { name: "Smart error target" }));
+    expect(screen.getByLabelText(/Target error/)).toBeVisible();
+    await user.selectOptions(screen.getByLabelText("Fight style"), "HeavyMovement");
+    await user.clear(screen.getByLabelText(/Random seed/));
+    await user.type(screen.getByLabelText(/Random seed/), "42");
+    await user.click(screen.getByRole("button", { name: "Update preview" }));
+    expect(mockInvoke).toHaveBeenLastCalledWith("quick_prepare", {
+      request: expect.objectContaining({
+        fightStyle: "HeavyMovement",
+        analysis: expect.objectContaining({ precision: "smart", seed: 42 }),
+      }),
+    });
+  });
+
   it("prepares the pinned runtime from the settings screen", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -338,6 +404,31 @@ describe("application shell", () => {
     await user.click(screen.getByRole("button", { name: "Download and install" }));
     expect(await screen.findByText("Ready")).toBeVisible();
     expect(mockInvoke).toHaveBeenCalledWith("runtime_install_latest");
+  });
+
+  it("shows the same installed runtime and game-data date on Home and Settings", async () => {
+    runtimeStatusResult = readyRuntime;
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByText("1210-01 · 3487fce · Game data Aug 25, 2026")).toBeVisible();
+    expect(screen.getByText("Ready")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByText("Aug 25, 2026")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Home" }));
+    expect(screen.getByText("Ready")).toBeVisible();
+  });
+
+  it("keeps empty tool titles separate from their import guidance", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Character Analysis" }));
+    expect(screen.getByRole("heading", { level: 1, name: "Review simulation input" })).toBeVisible();
+    expect(screen.getByText("Import and review a profile before configuring the analysis.")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Gear Optimizer" }));
+    expect(screen.getByRole("heading", { level: 1, name: "Compare gear and upgrades" })).toBeVisible();
+    expect(screen.getByText("Import a Retail Live profile before configuring Gear Optimizer.")).toBeVisible();
   });
 
   it("asks before updating SimulationCraft and accepts Later without installing", async () => {
@@ -356,12 +447,16 @@ describe("application shell", () => {
   it("checks for a SimulationCraft update only once per local day", async () => {
     const first = render(<App />);
     await screen.findByRole("heading", { name: "WoW gear simulation" });
-    expect(mockInvoke.mock.calls.filter(([command]) => command === "runtime_status")).toHaveLength(1);
+    await waitFor(() => {
+      expect(mockInvoke.mock.calls.filter(([command]) => command === "runtime_status")).toHaveLength(1);
+      expect(mockInvoke.mock.calls.filter(([command]) => command === "runtime_check_updates")).toHaveLength(1);
+    });
     first.unmount();
 
     render(<App />);
     await screen.findByRole("heading", { name: "WoW gear simulation" });
-    expect(mockInvoke.mock.calls.filter(([command]) => command === "runtime_status")).toHaveLength(1);
+    await waitFor(() => expect(mockInvoke.mock.calls.filter(([command]) => command === "runtime_status")).toHaveLength(2));
+    expect(mockInvoke.mock.calls.filter(([command]) => command === "runtime_check_updates")).toHaveLength(1);
   });
 
   it("installs a detected SimulationCraft update only after Yes", async () => {
@@ -461,6 +556,13 @@ describe("application shell", () => {
     expect(await screen.findByRole("heading", { name: "Compare gear and upgrades" })).toBeVisible();
     expect(await screen.findByText("Exact execution preview")).toBeVisible();
     expect(screen.getByRole("button", { name: "Add virtual variant" })).toBeEnabled();
+    expect(screen.getByRole("heading", { name: "Gear candidates" })).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: /Candidate Helm/ })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /Dungeon/ })).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Lock Head" }));
+    expect(mockInvoke).toHaveBeenCalledWith("top_gear_prepare", expect.objectContaining({ request: expect.objectContaining({ lockedSlots: ["head"] }) }));
+    await user.click(screen.getByRole("checkbox", { name: /Dungeon/ }));
+    expect(mockInvoke).toHaveBeenCalledWith("top_gear_prepare", expect.objectContaining({ request: expect.objectContaining({ talentLoadouts: expect.arrayContaining([expect.objectContaining({ key: "saved-0", enabled: true })]) }) }));
     await expectNoAutomatedAccessibilityViolations();
   });
 

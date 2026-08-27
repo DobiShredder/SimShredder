@@ -489,6 +489,7 @@ mod tests {
             desired_targets: 1,
             fight_style: "Patchwerk".into(),
             cpu_preset: CpuChoice::Balanced,
+            analysis: crate::AnalysisOptions::default(),
         }
     }
 

@@ -162,7 +162,49 @@ fn validate_profile(profile: &Profile) -> Result<()> {
                 | "load_default_gear"
                 | "source"
                 | "default_actions"
-        ) {
+                | "timeofday"
+                | "warlock.default_pet"
+                | "target_error"
+                | "target_level"
+                | "target_race"
+                | "default_world_lag"
+                | "default_world_lag_stddev"
+                | "skill"
+                | "optimal_raid"
+                | "override.bloodlust"
+                | "bloodlust_time"
+                | "bloodlust_percent"
+                | "report_pets_separately"
+                | "override.arcane_intellect"
+                | "override.battle_shout"
+                | "override.mark_of_the_wild"
+                | "override.power_word_fortitude"
+                | "override.chaos_brand"
+                | "override.mystic_touch"
+                | "override.windfury_totem"
+                | "override.hunters_mark"
+                | "override.bleeding"
+                | "external_buffs.power_infusion"
+                | "external_buffs.blessing_of_summer"
+                | "external_buffs.blessing_of_autumn"
+                | "external_buffs.blessing_of_winter"
+                | "external_buffs.blessing_of_spring"
+                | "report_rng"
+                | "full_damage_sources_chart"
+                | "buff_uptime_timeline"
+                | "buff_stack_uptime_timeline"
+                | "reaction_time"
+                | "queue_lag"
+                | "queue_lag_stddev"
+                | "gcd_lag"
+                | "gcd_lag_stddev"
+                | "channel_lag"
+                | "channel_lag_stddev"
+                | "travel_variance"
+                | "enemy_initial_health_percentage"
+                | "enemy_death_pct"
+        ) && !key.starts_with("midnight.")
+        {
             return invalid(format!("unsupported scalar option: {key}"));
         }
         validate_value(key, value)?;
@@ -205,6 +247,8 @@ fn validate_item(item: &Item) -> Result<()> {
         if !matches!(
             key.as_str(),
             "enchant_id"
+                | "enchant"
+                | "embellishment"
                 | "gem_id"
                 | "bonus_id"
                 | "gem_bonus_id"
@@ -214,6 +258,7 @@ fn validate_item(item: &Item) -> Result<()> {
                 | "content_tuning"
                 | "redirected_base_stats"
                 | "titan_disc_id"
+                | "context"
                 | "ilevel"
         ) {
             return invalid(format!("unsupported item option: {key}"));

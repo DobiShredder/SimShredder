@@ -52,6 +52,7 @@ fn import_preview_queue_and_result_match_the_gui_request() {
         desired_targets: 2,
         fight_style: "Patchwerk".into(),
         cpu_preset: CpuChoice::Balanced,
+        analysis: simshredder_desktop_service::AnalysisOptions::default(),
     };
     let temporary = tempfile::tempdir().expect("temporary app data must be available");
     let service = DesktopService::open(temporary.path()).expect("service must open");
@@ -125,8 +126,14 @@ fn top_gear_runs_low_and_high_precision_through_the_persistent_queue() {
             desired_targets: 1,
             fight_style: "Patchwerk".into(),
             cpu_preset: CpuChoice::Balanced,
+            analysis: simshredder_desktop_service::AnalysisOptions::default(),
         },
         variants: Vec::new(),
+        talent_loadouts: Vec::new(),
+        profile_options: BTreeMap::new(),
+        locked_slots: Default::default(),
+        minimum_set_pieces: BTreeMap::new(),
+        catalyst_charges: 0,
         balances: BTreeMap::from([("crest".into(), 10), ("valor".into(), 10)]),
         reserves: BTreeMap::from([("crest".into(), 2)]),
         currency_confirmed_at_unix_seconds: 1,
