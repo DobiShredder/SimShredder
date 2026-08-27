@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SimShredder",
+  "version": "0.1.0",
+  "identifier": "dev.simshredder.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "SimShredder",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 720,
+        "minHeight": 560,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "capabilities": ["main-window"],
+      "csp": "default-src 'self'; img-src 'self' asset: data: simshredder-icon:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "license": "Apache-2.0",
+    "publisher": "SimShredder contributors",
+    "homepage": "https://github.com/DobiShredder/SimShredder",
+    "resources": {
+      "../../../LICENSE": "licenses/LICENSE",
+      "../../../NOTICE": "licenses/NOTICE",
+      "../../../legal/THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+      "../../../docs/PRIVACY.md": "licenses/PRIVACY.md",
+      "../../../legal/reports/rust-third-party-licenses.md": "licenses/rust-third-party-licenses.md",
+      "../../../legal/reports/node-third-party-licenses.md": "licenses/node-third-party-licenses.md"
+    }
+  }
+}

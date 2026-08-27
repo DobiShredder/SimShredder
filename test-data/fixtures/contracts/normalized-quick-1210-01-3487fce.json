@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "report_version": "2.0.0",
+  "runtime": {
+    "simc_version": "1210-01",
+    "git_revision": "3487fce",
+    "game_version": "12.1.0.69465",
+    "game_build": 69465,
+    "channel": "live"
+  },
+  "player": {
+    "name": "PhaseOneFile",
+    "race": "orc",
+    "role": "attack",
+    "specialization": "Fury Warrior"
+  },
+  "options": {
+    "iterations": 100,
+    "threads": 1,
+    "seed": 12345,
+    "max_time_seconds": 20.0,
+    "desired_targets": 1,
+    "fight_style": "Patchwerk"
+  },
+  "primary_metric": {
+    "name": "dps",
+    "mean": 169231.4270096394,
+    "mean_error": 1088.2874571998057,
+    "standard_deviation": 10828.32347874515,
+    "minimum": 140353.80206709097,
+    "maximum": 187306.55019829237,
+    "median": 170408.09851209826
+  },
+  "actions": [
+    {
+      "id": 335096,
+      "name": "Bloodbath",
+      "internal_name": "bloodbath",
+      "school": "physical",
+      "executes": 7.36,
+      "amount_per_fight": 817423.08,
+      "metric_per_second": 40871.15,
+      "share": 0.2415
+    }
+  ],
+  "buffs": [
+    {
+      "id": 107574,
+      "name": "Avatar",
+      "internal_name": "avatar",
+      "uptime_percent": 100.0,
+      "benefit_percent": 98.97,
+      "starts": 1.0
+    }
+  ],
+  "resources": [
+    {
+      "name": "rage",
+      "spent_per_fight": 555.05,
+      "overflow_per_fight": 5.94,
+      "remaining_per_fight": 57.85
+    }
+  ],
+  "apl_sequence": [
+    {
+      "time_seconds": 0.0,
+      "id": 107574,
+      "name": "Avatar",
+      "internal_name": "avatar",
+      "target": "none",
+      "resources": { "rage": 77.6 },
+      "resource_max": { "rage": 130.0 }
+    }
+  ]
+}

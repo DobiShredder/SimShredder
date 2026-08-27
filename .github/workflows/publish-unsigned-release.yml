@@ -1,0 +1,150 @@
+name: Publish verified unsigned 0.x release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v0.x tag attached to the candidate commit
+        required: true
+        type: string
+      candidate_run_id:
+        description: Successful Prepare unsigned release candidate workflow run ID
+        required: true
+        type: string
+      manual_evidence_base64:
+        description: Base64 of completed manual-release-evidence.json for the exact candidate artifacts
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: publish-unsigned-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  validate-input:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release input before checking out or executing repository code
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        shell: bash
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v0\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo 'release tag must be a valid v0.x semantic version' >&2
+            exit 1
+          fi
+          if [[ ! "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo 'candidate run ID must be a positive integer' >&2
+            exit 1
+          fi
+
+  publish:
+    needs: validate-input
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 11.23.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.98.0
+      - run: pnpm install --frozen-lockfile
+      - name: Verify tag, version, ancestry and public history
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          test "$(git tag --points-at HEAD --list "$RELEASE_TAG")" = "$RELEASE_TAG"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/master)"
+          node tooling/release/verify-version.mjs "$RELEASE_TAG"
+          node tooling/release/audit-public-history.mjs
+          printf 'RELEASE_COMMIT=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - name: Verify candidate workflow identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        shell: bash
+        run: |
+          run_path=$(gh api "repos/${{ github.repository }}/actions/runs/$CANDIDATE_RUN_ID" --jq '.path')
+          run_sha=$(gh api "repos/${{ github.repository }}/actions/runs/$CANDIDATE_RUN_ID" --jq '.head_sha')
+          run_conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/$CANDIDATE_RUN_ID" --jq '.conclusion')
+          test "$run_path" = '.github/workflows/unsigned-release.yml'
+          test "$run_sha" = "$RELEASE_COMMIT"
+          test "$run_conclusion" = 'success'
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: unsigned-release-*
+          path: candidate
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.candidate_run_id }}
+      - name: Decode and verify release-bound manual evidence
+        env:
+          MANUAL_EVIDENCE_BASE64: ${{ inputs.manual_evidence_base64 }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          printf '%s' "$MANUAL_EVIDENCE_BASE64" | base64 --decode > "$RUNNER_TEMP/manual-release-evidence.json"
+          node tooling/release/verify-unsigned-candidate.mjs candidate "$RELEASE_COMMIT" "$RELEASE_TAG" > "$RUNNER_TEMP/candidate-artifacts.json"
+          mac_sha=$(node -e "const r=require(process.argv[1]); process.stdout.write(r['macos-aarch64'].sha256)" "$RUNNER_TEMP/candidate-artifacts.json")
+          windows_sha=$(node -e "const r=require(process.argv[1]); process.stdout.write(r['windows-x64'].sha256)" "$RUNNER_TEMP/candidate-artifacts.json")
+          node tooling/release/verify-manual-release-evidence.mjs "$RUNNER_TEMP/manual-release-evidence.json" "$RELEASE_COMMIT" "$RELEASE_TAG" "$mac_sha" "$windows_sha"
+      - name: Verify complete locked production license reports
+        shell: bash
+        run: |
+          cargo install --locked --features cli --version 0.9.1 cargo-about
+          mkdir "$RUNNER_TEMP/release-licenses"
+          cargo about generate --config legal/cargo-about/about.toml -o "$RUNNER_TEMP/release-licenses/rust-third-party-licenses.md" legal/cargo-about/about.hbs
+          node tooling/licenses/normalize-text-report.mjs "$RUNNER_TEMP/release-licenses/rust-third-party-licenses.md"
+          pnpm licenses list --json --prod > "$RUNNER_TEMP/pnpm-licenses.json"
+          node tooling/licenses/generate-node-licenses.mjs "$RUNNER_TEMP/pnpm-licenses.json" "$RUNNER_TEMP/release-licenses/node-third-party-licenses.md"
+          cmp legal/reports/rust-third-party-licenses.md "$RUNNER_TEMP/release-licenses/rust-third-party-licenses.md"
+          cmp legal/reports/node-third-party-licenses.md "$RUNNER_TEMP/release-licenses/node-third-party-licenses.md"
+      - name: Assemble exact candidate and release sidecars
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          mkdir release-assets
+          for name in \
+            "SimShredder-$RELEASE_TAG-aarch64.dmg" \
+            "SimShredder-$RELEASE_TAG-windows-x64-setup.exe" \
+            macos-aarch64-provenance.json \
+            windows-x64-provenance.json \
+            windows-clean-user-evidence.json; do
+            matches=$(find candidate -type f -name "$name" -print)
+            test "$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l)" = 1
+            cp "$matches" "release-assets/$name"
+          done
+          cp "$RUNNER_TEMP/manual-release-evidence.json" release-assets/manual-release-evidence.json
+          cp LICENSE NOTICE legal/THIRD_PARTY_NOTICES.md docs/PRIVACY.md legal/reports/rust-third-party-licenses.md legal/reports/node-third-party-licenses.md release-assets/
+          (cd release-assets && find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+      - name: Publish a new verified unsigned prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "release $RELEASE_TAG already exists; refusing to replace it" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" release-assets/* --verify-tag --prerelease --title "SimShredder $RELEASE_TAG" --notes-file docs/UNSIGNED_INSTALLATION.md

@@ -1,0 +1,34 @@
+{
+  "identity": {
+    "simc_version": "1210-01",
+    "game_version": "12.1.0.69465",
+    "channel": "live",
+    "hotfix": "2026-08-24/69465"
+  },
+  "logical_cpus": 10,
+  "iterations": 10000,
+  "samples": [
+    { "threads": 1, "profileset_work_threads": 0, "repetition": 1, "elapsed_millis": 2907 },
+    { "threads": 1, "profileset_work_threads": 0, "repetition": 2, "elapsed_millis": 2982 },
+    { "threads": 1, "profileset_work_threads": 0, "repetition": 3, "elapsed_millis": 2941 },
+    { "threads": 2, "profileset_work_threads": 0, "repetition": 1, "elapsed_millis": 1581 },
+    { "threads": 2, "profileset_work_threads": 0, "repetition": 2, "elapsed_millis": 1594 },
+    { "threads": 2, "profileset_work_threads": 0, "repetition": 3, "elapsed_millis": 1627 },
+    { "threads": 2, "profileset_work_threads": 1, "repetition": 1, "elapsed_millis": 1757 },
+    { "threads": 2, "profileset_work_threads": 1, "repetition": 2, "elapsed_millis": 1769 },
+    { "threads": 2, "profileset_work_threads": 1, "repetition": 3, "elapsed_millis": 1768 },
+    { "threads": 4, "profileset_work_threads": 1, "repetition": 1, "elapsed_millis": 1557 },
+    { "threads": 4, "profileset_work_threads": 1, "repetition": 2, "elapsed_millis": 1561 },
+    { "threads": 4, "profileset_work_threads": 1, "repetition": 3, "elapsed_millis": 1606 },
+    { "threads": 4, "profileset_work_threads": 2, "repetition": 1, "elapsed_millis": 1057 },
+    { "threads": 4, "profileset_work_threads": 2, "repetition": 2, "elapsed_millis": 1077 },
+    { "threads": 4, "profileset_work_threads": 2, "repetition": 3, "elapsed_millis": 1085 }
+  ],
+  "median_millis": {
+    "threads=1/profileset_work_threads=0": 2941,
+    "threads=2/profileset_work_threads=0": 1594,
+    "threads=2/profileset_work_threads=1": 1768,
+    "threads=4/profileset_work_threads=1": 1561,
+    "threads=4/profileset_work_threads=2": 1077
+  }
+}

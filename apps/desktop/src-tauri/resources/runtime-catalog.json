@@ -1,0 +1,43 @@
+{
+  "payload": {
+    "schema_version": 1,
+    "sequence": 5,
+    "generated_at_unix_seconds": 1787730995,
+    "expires_at_unix_seconds": 1803282995,
+    "manifests": [
+      {
+        "schema_version": 1,
+        "simc_version": "1210-01",
+        "game_channel": "live",
+        "platform": "macos",
+        "architecture": "aarch64",
+        "build": "02b39ce",
+        "filename": "simc-1210-01-macos-02b39ce.dmg",
+        "url": "http://downloads.simulationcraft.org/nightly/simc-1210-01-macos-02b39ce.dmg",
+        "size": 227941280,
+        "sha256": "1b695a4f631def8bec4a0801f7d1b9b8495eb5b9b406487895b9f38300ff0637"
+      },
+      {
+        "schema_version": 1,
+        "simc_version": "1210-01",
+        "game_channel": "live",
+        "platform": "windows",
+        "architecture": "x86_64",
+        "build": "02b39ce",
+        "filename": "simc-1210.01.02b39ce-win64.7z",
+        "url": "http://downloads.simulationcraft.org/nightly/simc-1210.01.02b39ce-win64.7z",
+        "size": 120783595,
+        "sha256": "614995f7ebb370c5605813aadf927c26da9576d783923c806ddb3eb194ae147e"
+      }
+    ],
+    "next_keys": [],
+    "revoked_key_ids": []
+  },
+  "signatures": [
+    {
+      "key_id": "runtime-release-2026-a",
+      "algorithm": "ed25519",
+      "signature_base64": "IYyaG2zFX2HoHBx8vUT/44MFZkAJQSLmBC/CW6J0GoNFBYkBNxqXrKGfS+p8kjV0vZVYJ5P5jYp2Y5AJtVjUDg=="
+    }
+  ]
+}

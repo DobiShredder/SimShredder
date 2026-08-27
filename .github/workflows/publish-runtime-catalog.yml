@@ -1,0 +1,55 @@
+name: Publish signed SimulationCraft runtime catalog
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-runtime-catalog
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.98.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - name: Verify bundled signature, target manifests and expiry
+        run: |
+          node tooling/release/audit-public-history.mjs
+          cargo test -p simshredder-runtime-manager --test catalog_resource -- --exact bundled_catalog_has_a_valid_production_signature
+      - name: Download and hash every official artifact immediately before publish
+        run: node tooling/runtime/verify-catalog-artifacts.mjs --catalog apps/desktop/src-tauri/resources/runtime-catalog.json --mode full --output-directory "$RUNNER_TEMP/verified-simc"
+      - name: Publish the byte-exact signed catalog asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          catalog='apps/desktop/src-tauri/resources/runtime-catalog.json'
+          release_tag='simc-runtime-catalog'
+          if ! gh release view "$release_tag" >/dev/null 2>&1; then
+            gh release create "$release_tag" --target "$GITHUB_SHA" --title 'SimulationCraft runtime catalog' --notes 'Machine-readable Ed25519-signed SimulationCraft runtime metadata. This release does not contain or redistribute SimulationCraft.' --latest=false
+          fi
+          gh release upload "$release_tag" "$catalog#runtime-catalog.json" --clobber
+          expected=$(sha256sum "$catalog" | awk '{print $1}')
+          temporary=$(mktemp -d "$RUNNER_TEMP/runtime-catalog.XXXXXX")
+          trap 'rm -rf "$temporary"' EXIT
+          gh release download "$release_tag" --pattern runtime-catalog.json --dir "$temporary"
+          actual=$(sha256sum "$temporary/runtime-catalog.json" | awk '{print $1}')
+          test "$actual" = "$expected"
+      - name: Recheck official artifact availability after publish
+        run: node tooling/runtime/verify-catalog-artifacts.mjs --catalog apps/desktop/src-tauri/resources/runtime-catalog.json --mode availability

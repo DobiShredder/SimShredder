@@ -1,0 +1,24 @@
+# A hand-authored supported single-player .simc profile
+warrior=PhaseOneFile
+level=90
+race=orc
+role=attack
+spec=fury
+position=back
+load_default_gear=1
+class_talents=all
+spec_talents=all
+hero_talents=1
+
+actions=auto_attack
+actions+=/raging_blow
+
+iterations=100
+fixed_time=1
+max_time=20
+vary_combat_length=0
+desired_targets=1
+fight_style=Patchwerk
+threads=1
+seed=12345
+report_details=1

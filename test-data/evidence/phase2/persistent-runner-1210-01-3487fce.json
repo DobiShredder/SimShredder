@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "observed_environment": {
+    "platform": "aarch64-apple-darwin",
+    "macos": "26.6.2",
+    "logical_cpus": 10,
+    "sqlite": "3.51.0",
+    "simc_version": "1210-01",
+    "git_revision": "3487fce",
+    "game_version": "12.1.0.69465",
+    "channel": "live",
+    "executable_sha256": "51d4f6914af8667f8cba5a529c96e86deb349332ed5eb22d47c2f32815671350"
+  },
+  "contracts": {
+    "migration_version": 1,
+    "journal_mode": "wal",
+    "synchronous": "full",
+    "database_mode_macos": "0600",
+    "run_root_mode_macos": "0700",
+    "bounded_log_bytes_per_stream": 1048576,
+    "exact_cache_schema_version": 1,
+    "balanced_cpu_plan": {
+      "threads": 4,
+      "profileset_work_threads": 2
+    },
+    "crash_restart": {
+      "forced_exit_code": 23,
+      "batches_before_crash": ["succeeded", "running", "queued"],
+      "executor_calls_after_restart": 2,
+      "completed_batch_reexecuted": false,
+      "partial_staging_preserved": true
+    },
+    "failure_modes": {
+      "sqlite_full_transaction_rolled_back": true,
+      "partial_output_rejected": true,
+      "artifact_enospc_preserved_completed_batch": true,
+      "cancel_retry_preserved_attempt_history": true,
+      "corrupt_cache_reexecuted": true
+    },
+    "real_simc": {
+      "quick_execution": "succeeded",
+      "identical_second_execution": "cache_hit",
+      "cancel_iterations": 10000000,
+      "cancel_delay_millis": 100,
+      "cancel_artifacts_preserved": true,
+      "invalid_input_nonzero_preserved": true,
+      "elapsed_seconds": 55.70
+    }
+  },
+  "verification": {
+    "non_ignored_tests": 36,
+    "formatter": "passed",
+    "workspace_check": "passed",
+    "clippy_warnings_denied": "passed"
+  }
+}

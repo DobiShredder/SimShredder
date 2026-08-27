@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "simc_version": "1210-01",
+  "game_channel": "live",
+  "platform": "windows",
+  "architecture": "x86_64",
+  "build": "3487fce",
+  "filename": "simc-1210.01.3487fce-win64.7z",
+  "url": "http://downloads.simulationcraft.org/nightly/simc-1210.01.3487fce-win64.7z",
+  "size": 120746974,
+  "sha256": "c212ca4c865819dae06d33c46bd2c01db6fbe5f3abc271577c06046b6ff40c30"
+}

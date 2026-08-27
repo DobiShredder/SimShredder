@@ -1,0 +1,41 @@
+# Build outputs
+/target/
+**/dist/
+**/node_modules/
+**/coverage/
+/scripts/
+*.tsbuildinfo
+/apps/desktop/config/vite.config.js
+/apps/desktop/config/vite.config.d.ts
+/apps/desktop/src-tauri/gen/
+/apps/desktop/src-tauri/icons/android/
+/apps/desktop/src-tauri/icons/ios/
+
+# Tauri and platform artifacts
+*.app
+*.dmg
+*.msi
+*.exe
+
+# Local application data and simulation artifacts
+/.simshredder/
+/runs/
+*.simc.json
+*.simc.html
+stdout.log
+stderr.log
+
+# Environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

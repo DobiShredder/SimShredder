@@ -1,0 +1,16 @@
+{
+  "listing_asset": "simc-1210-01-macos-3487fce.dmg",
+  "official_url": "http://downloads.simulationcraft.org/nightly/simc-1210-01-macos-3487fce.dmg",
+  "downloaded_size": 226929563,
+  "downloaded_sha256": "2b090829b9cac3c2a89f04552f492977ed14260991c76b7c27cc7ff91ea08eaf",
+  "installed_executable_sha256": "51d4f6914af8667f8cba5a529c96e86deb349332ed5eb22d47c2f32815671350",
+  "executable_architecture": "arm64",
+  "identity": {
+    "simc_version": "1210-01",
+    "git_revision": "3487fce",
+    "game_version": "12.1.0.69465",
+    "channel": "live",
+    "hotfix": "2026-08-24/69465"
+  },
+  "observed_at": "2026-08-25T17:15:32+09:00"
+}

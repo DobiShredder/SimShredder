@@ -1,0 +1,24 @@
+[package]
+name = "simshredder-desktop-service"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+simc-adapter = { path = "../../infrastructure/simc-adapter" }
+simshredder-core = { path = "../headless-core" }
+simshredder-domain = { path = "../../core/domain" }
+simshredder-job-runner = { path = "../../infrastructure/job-runner" }
+simshredder-runtime-manager = { path = "../../infrastructure/runtime-manager" }
+simshredder-storage = { path = "../../infrastructure/storage" }
+simshredder-top-gear = { path = "../../features/top-gear" }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,76 @@
+{
+  "observed_environment": {
+    "platform": "aarch64-apple-darwin",
+    "macos": "26.6.2",
+    "simc_version": "1210-01",
+    "git_revision": "3487fce",
+    "game_version": "12.1.0.69465",
+    "channel": "live",
+    "executable_sha256": "51d4f6914af8667f8cba5a529c96e86deb349332ed5eb22d47c2f32815671350"
+  },
+  "runs": [
+    {
+      "source_kind": "addon_export",
+      "simshredder_version": "0.1.0",
+      "source_sha256": "d7fe9293b4accde085fa75a2543bc7a08c50eab7c10655a7d4124ec5fb4c74b1",
+      "generated_input_sha256": "53906da21fb1a70a39651eb135a007daf9587feb09a1ff116960159753962ecc",
+      "status": "succeeded",
+      "exit_code": 0,
+      "player": "PhaseOneAddon",
+      "normalized_schema_version": 1,
+      "report_version": "2.0.0",
+      "artifact_paths": [
+        "source.simc",
+        "generated.simc",
+        "stdout.log",
+        "stderr.log",
+        "result.json",
+        "report.html",
+        "normalized.json"
+      ]
+    },
+    {
+      "source_kind": "simc_file",
+      "simshredder_version": "0.1.0",
+      "source_sha256": "43192b8d820a7f01bb95e5857126256ddcfb5be79d71f50525f446796e73df7e",
+      "generated_input_sha256": "a85b8d61df4cb97d127017121495e84534f0b9507d700d69ec7815c77beb04b5",
+      "status": "succeeded",
+      "exit_code": 0,
+      "player": "PhaseOneFile",
+      "normalized_schema_version": 1,
+      "report_version": "2.0.0",
+      "artifact_paths": [
+        "source.simc",
+        "generated.simc",
+        "stdout.log",
+        "stderr.log",
+        "result.json",
+        "report.html",
+        "normalized.json"
+      ]
+    }
+  ],
+  "failure_contract": {
+    "nonzero_exit_preserves": [
+      "source.simc",
+      "generated.simc",
+      "stdout.log",
+      "stderr.log",
+      "manifest.json"
+    ],
+    "normalized_result_created": false,
+    "timeout": {
+      "deadline_ms": 1,
+      "status": "failed",
+      "preserves": [
+        "source.simc",
+        "generated.simc",
+        "stdout.log",
+        "stderr.log",
+        "manifest.json"
+      ]
+    },
+    "sealed_file_mode_macos": "0400",
+    "existing_output_overwritten": false
+  }
+}

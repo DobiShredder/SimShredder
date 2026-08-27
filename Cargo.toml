@@ -1,0 +1,47 @@
+[workspace]
+members = [
+  "apps/desktop/src-tauri",
+  "crates/application/desktop-service",
+  "crates/application/headless-core",
+  "crates/core/domain",
+  "crates/core/input-builder",
+  "crates/core/profile-parser",
+  "crates/features/top-gear",
+  "crates/infrastructure/icon-cache",
+  "crates/infrastructure/job-runner",
+  "crates/infrastructure/runtime-manager",
+  "crates/infrastructure/simc-adapter",
+  "crates/infrastructure/storage",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.98"
+
+[workspace.dependencies]
+atomic-write-file = "0.3.1"
+base64 = "0.22.1"
+clap = { version = "4.5.46", features = ["derive"] }
+ed25519-dalek = "3.0.0"
+regex = "1.11.2"
+reqwest = { version = "0.12.23", default-features = false, features = ["blocking", "rustls-tls"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.143"
+sevenz-rust2 = { version = "0.22.0", default-features = false, features = ["util"] }
+sha2 = "0.10.9"
+tempfile = "3.21.0"
+thiserror = "2.0.16"
+tauri = "2.11.5"
+tauri-build = "2.6.3"
+tauri-plugin-opener = "2.5.4"
+windows-spawn = "0.1.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"

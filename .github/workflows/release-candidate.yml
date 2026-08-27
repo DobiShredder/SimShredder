@@ -1,0 +1,194 @@
+name: Signed release candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: optional-signed-release-candidate
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    if: github.ref == 'refs/heads/master'
+    runs-on: macos-26
+    environment: release
+    env:
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 11.23.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.98.0
+          targets: aarch64-apple-darwin
+      - run: pnpm install --frozen-lockfile
+      - name: Generate complete locked production license reports
+        run: |
+          cargo install --locked --features cli --version 0.9.1 cargo-about
+          mkdir "$RUNNER_TEMP/release-licenses"
+          cargo about generate --config legal/cargo-about/about.toml -o "$RUNNER_TEMP/release-licenses/rust-third-party-licenses.md" legal/cargo-about/about.hbs
+          node tooling/licenses/normalize-text-report.mjs "$RUNNER_TEMP/release-licenses/rust-third-party-licenses.md"
+          pnpm licenses list --json --prod > "$RUNNER_TEMP/pnpm-licenses.json"
+          node tooling/licenses/generate-node-licenses.mjs "$RUNNER_TEMP/pnpm-licenses.json" "$RUNNER_TEMP/release-licenses/node-third-party-licenses.md"
+          cmp legal/reports/rust-third-party-licenses.md "$RUNNER_TEMP/release-licenses/rust-third-party-licenses.md"
+          cmp legal/reports/node-third-party-licenses.md "$RUNNER_TEMP/release-licenses/node-third-party-licenses.md"
+      - name: Import Developer ID certificate into an ephemeral keychain
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
+          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/release.keychain-db"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
+          security list-keychains -d user -s "$RUNNER_TEMP/release.keychain-db"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$RUNNER_TEMP/release.keychain-db" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
+      - name: Build, sign and notarize Apple Silicon artifacts
+        run: pnpm --filter @simshredder/desktop exec tauri build --target aarch64-apple-darwin
+      - name: Verify signatures, notarization tickets and provenance
+        run: |
+          app='target/aarch64-apple-darwin/release/bundle/macos/SimShredder.app'
+          dmg=$(find target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          test -n "$dmg"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          xcrun stapler validate "$dmg"
+          hdiutil verify "$dmg"
+          mountpoint=$(mktemp -d "$RUNNER_TEMP/simshredder-signed-dmg.XXXXXX")
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mountpoint" "$dmg"
+          trap 'hdiutil detach "$mountpoint" >/dev/null 2>&1 || true' EXIT
+          user_apps="$RUNNER_TEMP/UserApplications"
+          mkdir -p "$user_apps"
+          cp -R "$mountpoint/SimShredder.app" "$user_apps/SimShredder.app"
+          hdiutil detach "$mountpoint"
+          trap - EXIT
+          installed="$user_apps/SimShredder.app"
+          codesign --verify --deep --strict --verbose=2 "$installed"
+          spctl --assess --type execute --verbose=2 "$installed"
+          "$installed/Contents/MacOS/simshredder-desktop" &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true' EXIT
+          sleep 5
+          kill -0 "$app_pid"
+          kill "$app_pid"
+          wait "$app_pid" || true
+          trap - EXIT
+          rm -rf "$installed"
+          test ! -e "$installed"
+          test -f "$app/Contents/Resources/licenses/LICENSE"
+          test -f "$app/Contents/Resources/licenses/rust-third-party-licenses.md"
+          test -f "$app/Contents/Resources/licenses/node-third-party-licenses.md"
+          cp -R legal/reports target/aarch64-apple-darwin/release/bundle/release-licenses
+          python3 -c 'import hashlib,json,os,pathlib; root=pathlib.Path("target/aarch64-apple-darwin/release/bundle"); files=[]; [(files.append({"path":str(p.relative_to(root)),"size":p.stat().st_size,"sha256":hashlib.sha256(p.read_bytes()).hexdigest()})) for p in root.rglob("*") if p.is_file()]; pathlib.Path("macos-provenance.json").write_text(json.dumps({"schema":1,"platform":"aarch64-apple-darwin","commit":os.environ["GITHUB_SHA"],"files":files},sort_keys=True,indent=2)+"\n")'
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: signed-aarch64-apple-darwin
+          path: |
+            target/aarch64-apple-darwin/release/bundle/
+            macos-provenance.json
+          if-no-files-found: error
+      - name: Remove ephemeral signing material
+        if: always()
+        env:
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/release.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/developer-id.p12"
+
+  windows:
+    if: github.ref == 'refs/heads/master'
+    runs-on: windows-2025
+    environment: release
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 11.23.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.98.0
+          targets: x86_64-pc-windows-msvc
+      - run: pnpm install --frozen-lockfile
+      - name: Generate complete locked production license reports
+        shell: pwsh
+        run: |
+          cargo install --locked --features cli --version 0.9.1 cargo-about
+          $licenseRoot = Join-Path $env:RUNNER_TEMP 'release-licenses'
+          New-Item -ItemType Directory -Path $licenseRoot | Out-Null
+          cargo about generate --config legal/cargo-about/about.toml -o "$licenseRoot\rust-third-party-licenses.md" legal/cargo-about/about.hbs
+          node tooling/licenses/normalize-text-report.mjs "$licenseRoot\rust-third-party-licenses.md"
+          pnpm licenses list --json --prod | Out-File "$env:RUNNER_TEMP\pnpm-licenses.json" -Encoding utf8
+          node tooling/licenses/generate-node-licenses.mjs "$env:RUNNER_TEMP\pnpm-licenses.json" "$licenseRoot\node-third-party-licenses.md"
+          if ((Get-FileHash legal/reports/rust-third-party-licenses.md).Hash -ne (Get-FileHash "$licenseRoot\rust-third-party-licenses.md").Hash) { throw 'Rust license report is stale' }
+          if ((Get-FileHash legal/reports/node-third-party-licenses.md).Hash -ne (Get-FileHash "$licenseRoot\node-third-party-licenses.md").Hash) { throw 'Node license report is stale' }
+      - name: Import Windows signing certificate for current user
+        shell: pwsh
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_PFX_BASE64))
+          $password = ConvertTo-SecureString $env:WINDOWS_PFX_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          if (-not $certificate.HasPrivateKey) { throw 'code-signing certificate has no private key' }
+          "WINDOWS_CERT_THUMBPRINT=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $config = @{ bundle = @{ windows = @{ certificateThumbprint = $certificate.Thumbprint; digestAlgorithm = 'sha256'; timestampUrl = $env:WINDOWS_TIMESTAMP_URL } } }
+          $config | ConvertTo-Json -Depth 5 | Out-File (Join-Path $env:RUNNER_TEMP 'tauri-signing.json') -Encoding utf8
+      - name: Build and sign Windows x64 current-user installer
+        shell: pwsh
+        run: pnpm --filter @simshredder/desktop exec tauri build --target x86_64-pc-windows-msvc --config "$env:RUNNER_TEMP\tauri-signing.json"
+      - name: Verify Authenticode and provenance
+        shell: pwsh
+        run: |
+          $root = Resolve-Path 'target/x86_64-pc-windows-msvc/release/bundle'
+          node tooling/release/verify-windows-pe.mjs 'target/x86_64-pc-windows-msvc/release/simshredder-desktop.exe'
+          $signed = @(Get-ChildItem 'target/x86_64-pc-windows-msvc/release' -Recurse -File -Filter '*.exe')
+          if ($signed.Count -lt 2) { throw 'expected signed application and NSIS installer' }
+          foreach ($file in $signed) {
+            $signature = Get-AuthenticodeSignature $file.FullName
+            if ($signature.Status -ne 'Valid') { throw "invalid signature for $($file.FullName): $($signature.Status)" }
+          }
+          $installer = @(Get-ChildItem 'target/x86_64-pc-windows-msvc/release/bundle/nsis' -File -Filter '*-setup.exe')
+          if ($installer.Count -ne 1) { throw 'expected one signed NSIS installer' }
+          & './tooling/release/verify-windows-clean-user.ps1' -InstallerPath $installer[0].FullName -Commit (git rev-parse HEAD) -ExpectedAuthenticodeStatus Valid -EvidencePath 'target/x86_64-pc-windows-msvc/release/bundle/windows-clean-user-evidence.json'
+          Copy-Item legal/reports (Join-Path $root 'release-licenses') -Recurse
+          $files = Get-ChildItem $root -Recurse -File | ForEach-Object { @{ path = $_.FullName.Substring($root.Path.Length + 1); size = $_.Length; sha256 = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant() } }
+          @{ schema = 1; platform = 'x86_64-pc-windows-msvc'; commit = $env:GITHUB_SHA; files = @($files) } | ConvertTo-Json -Depth 5 | Out-File 'windows-provenance.json' -Encoding utf8
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: signed-x86_64-pc-windows-msvc
+          path: |
+            target/x86_64-pc-windows-msvc/release/bundle/
+            windows-provenance.json
+          if-no-files-found: error
+      - name: Remove ephemeral signing material
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:WINDOWS_CERT_THUMBPRINT) { Remove-Item "Cert:\CurrentUser\My\$env:WINDOWS_CERT_THUMBPRINT" -Force -ErrorAction SilentlyContinue }
+          Remove-Item "$env:RUNNER_TEMP\codesign.pfx","$env:RUNNER_TEMP\tauri-signing.json" -Force -ErrorAction SilentlyContinue

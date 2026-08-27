@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "capturedAt": "2026-08-27T01:20:38+09:00",
+  "sourceCommit": "21289e90ccd6ab144689a0d712a4ad0fd5f3a9c4",
+  "sourceState": "sourceCommit plus 28 modified and 2 non-ignored untracked production-snapshot files; this evidence file is excluded, and artifacts are local, unsigned and not commit-bound",
+  "sourceSnapshotSha256": "978d44f62512049699ee735e86bc67ade2a3d53d46c58f4a5be50ea845257b99",
+  "sourceSnapshotMethod": "SHA-256 over each existing tracked or non-ignored untracked public source path, NUL, file bytes, NUL in sorted path order; this evidence file is excluded to avoid self-reference",
+  "publicBoundary": {
+    "sourceFiles": 229,
+    "largestSourcePath": "legal/reports/rust-third-party-licenses.md",
+    "largestSourceBytes": 503932,
+    "currentSourceForbiddenPathOrCredentialMarker": false,
+    "historyBlobs": 232,
+    "historyForbiddenPathCredentialLargeBlobOrNonNoreplyIdentity": false,
+    "internalDocsScriptsAndPrivateKeysOutsidePublicRoot": true
+  },
+  "catalog": {
+    "sequence": 5,
+    "keyId": "runtime-release-2026-a",
+    "bundledSignatureTest": "passed",
+    "productionUrl": "https://github.com/DobiShredder/SimShredder/releases/download/simc-runtime-catalog/runtime-catalog.json",
+    "productionUrlStatus": 404,
+    "productionPublished": false,
+    "encryptedBackupRecoveryEvidenceCount": 0
+  },
+  "macos": {
+    "hostVersion": "26.6.2 (25G83)",
+    "target": "aarch64-apple-darwin",
+    "applicationFormat": "Mach-O 64-bit arm64",
+    "minimumSystemVersion": "26.0",
+    "applicationExecutableBytes": 23040544,
+    "applicationExecutableSha256": "f8854e61f132b831838da93769955b66a34d024c9322e90147a3b5d6637d3e04",
+    "dmgBytes": 7548660,
+    "dmgSha256": "d9b8fa9294a97a4721c4b5a570a3f444aa1cac6f969cbd85c22fe193f8da05dc",
+    "dmgChecksum": "valid",
+    "readOnlyMountPerUserCopyFiveSecondLaunch": "passed on the current administrator account; not clean non-admin evidence",
+    "signatureState": "linker ad-hoc only; full bundle codesign and Gatekeeper assessment fail",
+    "notarizationTicket": false,
+    "cleanStandardAccountManualVoiceOverEvidence": false
+  },
+  "windows": {
+    "target": "x86_64-pc-windows-msvc",
+    "crossBuild": "passed with cargo-xwin and expected non-native PDB/signing warnings",
+    "applicationFormat": "PE32+ x86-64 Windows GUI subsystem",
+    "applicationBytes": 20069888,
+    "applicationSha256": "fba4ee3786e10ad09f292109f2a6445a0853fff74ab88b84c5d36867316364bc",
+    "installerFormat": "NSIS PE32 bootstrapper for x64 payload",
+    "installerBytes": 7245131,
+    "installerSha256": "0c6b7996e8f80006538b380e396f7aed994fc36b22c17ce5bf17892eb1cc8cc4",
+    "installerContract": "INSTALLMODE=currentUser, RequestExecutionLevel=user, default LOCALAPPDATA product directory, English and Korean",
+    "applicationAuthenticodeCertificateTableEmpty": true,
+    "installerAuthenticodeCertificateTableEmpty": true,
+    "nativeCurrentSourceExecution": false,
+    "cleanStandardAccountManualNarratorEvidence": false
+  },
+  "licenses": {
+    "rustReportBytes": 503932,
+    "nodeReportBytes": 186021,
+    "lockedReportsRegeneratedByteIdentical": true,
+    "macosBundleSixCanonicalResourcesByteIdentical": true,
+    "windowsNsisStagesSixCanonicalResources": true,
+    "githubReleaseSidecarsVerified": false
+  },
+  "verification": {
+    "macosWorkspaceFmtClippyLockedTests": "passed",
+    "windowsWorkspaceAllTargetCrossCheckAndClippy": "passed",
+    "localization": "2 locales, 340 messages",
+    "componentTests": "18 passed",
+    "frontendProductionBuild": "passed",
+    "macosOfflineTauriE2e": "passed with reviewed Retina baselines",
+    "macosOfficialSimcLiveTauriE2e": "passed in 5m26.4s with 1210-01 revision 2165324, 12.1.0.69404 Live; Quick Sim, detailed results, Top Gear and export",
+    "releaseToolingTests": "18 passed",
+    "gitDiffCheck": "passed"
+  },
+  "releaseReadiness": {
+    "localUnsignedArtifactsMatchCurrentSnapshot": true,
+    "commitBoundCandidate": false,
+    "productionCatalogAvailable": false,
+    "twoEncryptedKeyBackupsRecovered": false,
+    "macosCleanStandardAccountManualEvidence": false,
+    "windowsCleanStandardAccountManualEvidence": false,
+    "windowsCurrentSourceNativeFinalGate": false,
+    "githubPrereleasePublished": false,
+    "phase5Complete": false
+  }
+}

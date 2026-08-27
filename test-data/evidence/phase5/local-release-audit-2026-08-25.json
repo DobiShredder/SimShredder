@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "capturedAt": "2026-08-25T23:52:53+09:00",
+  "sourceCommit": null,
+  "catalog": {
+    "sequence": 3,
+    "keyId": "runtime-release-2026-a",
+    "signatureVerified": true,
+    "remotePublished": false,
+    "remoteStatus": 404
+  },
+  "macos": {
+    "host": "Apple Silicon macOS 26",
+    "officialSimcInstallActivateDoctorAndRetryRecovery": "passed",
+    "offlineKoEnGuiE2eAndScreenshots": "passed",
+    "unsignedDmgSha256": "3d65303e98013194df2c2a9e7e1383671b7c63c8678abdcb5fd8ff5f76576fd3",
+    "dmgChecksum": "valid",
+    "minimumSystemVersion": "26.0",
+    "developerIdSignedAndNotarized": false,
+    "cleanNonAdminAccount": false
+  },
+  "windows": {
+    "crossCompileAllTargets": "passed",
+    "applicationFormat": "PE32+ x86-64 Windows GUI",
+    "unsignedApplicationSha256": "f717a195748571cafcf3f08f6ddd2e302c95aba749103993dffef18366d86549",
+    "unsignedNsisSha256": "cdd623779559f58ff45516ec90839a1867509078a491d321ab4088c3e93806ea",
+    "nativeExecution": false,
+    "authenticodeSigned": false,
+    "cleanNonAdminAccount": false
+  },
+  "licenses": {
+    "rustReportBytes": 501869,
+    "nodeReportBytes": 184960,
+    "embeddedInMacosBundle": true,
+    "stagedForWindowsNsis": true,
+    "signedArtifactVerified": false
+  },
+  "verification": {
+    "rustWorkspaceFmtClippyTests": "passed",
+    "windowsWorkspaceAllTargetCrossCheck": "passed",
+    "typescriptCheckVitestProductionBuild": "passed",
+    "workflowYamlParse": "passed",
+    "credentialAndLargeBlobLocalScan": "passed",
+    "signedTwoOsRelease": "blocked-on-external-credentials-and-native-windows-evidence"
+  }
+}

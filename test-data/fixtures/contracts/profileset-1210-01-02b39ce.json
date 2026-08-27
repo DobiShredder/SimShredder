@@ -1,0 +1,41 @@
+{
+  "git_revision": "02b39ce",
+  "metric": "Damage per Second",
+  "results": [
+    {
+      "iterations": 100,
+      "keys": [
+        "first_quartile",
+        "iterations",
+        "max",
+        "mean",
+        "mean_error",
+        "mean_stddev",
+        "median",
+        "min",
+        "name",
+        "stddev",
+        "third_quartile"
+      ],
+      "name": "long"
+    },
+    {
+      "iterations": 100,
+      "keys": [
+        "first_quartile",
+        "iterations",
+        "max",
+        "mean",
+        "mean_error",
+        "mean_stddev",
+        "median",
+        "min",
+        "name",
+        "stddev",
+        "third_quartile"
+      ],
+      "name": "short"
+    }
+  ],
+  "version": "1210-01"
+}

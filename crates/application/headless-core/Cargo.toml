@@ -1,0 +1,27 @@
+[package]
+name = "simshredder-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clap.workspace = true
+input-builder = { path = "../../core/input-builder" }
+profile-parser = { path = "../../core/profile-parser" }
+serde.workspace = true
+serde_json.workspace = true
+simc-adapter = { path = "../../infrastructure/simc-adapter" }
+simshredder-domain = { path = "../../core/domain" }
+simshredder-job-runner = { path = "../../infrastructure/job-runner" }
+thiserror.workspace = true
+
+[[bin]]
+name = "simshredder-headless"
+path = "src/bin/simshredder-headless.rs"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

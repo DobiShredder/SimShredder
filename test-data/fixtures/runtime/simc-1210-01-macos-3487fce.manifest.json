@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "simc_version": "1210-01",
+  "game_channel": "live",
+  "platform": "macos",
+  "architecture": "aarch64",
+  "build": "3487fce",
+  "filename": "simc-1210-01-macos-3487fce.dmg",
+  "url": "http://downloads.simulationcraft.org/nightly/simc-1210-01-macos-3487fce.dmg",
+  "size": 226929563,
+  "sha256": "2b090829b9cac3c2a89f04552f492977ed14260991c76b7c27cc7ff91ea08eaf"
+}

@@ -1,0 +1,21 @@
+{
+  "identity": {
+    "simc_version": "1210-01",
+    "game_version": "12.1.0.69465",
+    "channel": "live",
+    "hotfix": "2026-08-24/69465"
+  },
+  "quick": {
+    "exit_code": 0,
+    "json_bytes": 106100,
+    "html_bytes": 1173711
+  },
+  "profileset": {
+    "exit_code": 0,
+    "json_bytes": 9645,
+    "html_bytes": 835237
+  },
+  "invalid_input_exit_code": 60,
+  "cancel_exit_code": null,
+  "cancel_elapsed_millis": 115
+}

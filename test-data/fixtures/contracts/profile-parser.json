@@ -1,0 +1,113 @@
+{
+  "addon": {
+    "actions": [],
+    "bag_items": [
+      {
+        "item": {
+          "id": 154029,
+          "options": {
+            "bonus_id": "100/200"
+          },
+          "slot": "head"
+        },
+        "name": "Candidate Helm (265)"
+      }
+    ],
+    "channel": "retail_live",
+    "class": "warrior",
+    "equipped_ids": {
+      "back": 154119,
+      "chest": 154026,
+      "feet": 154027,
+      "finger1": 154114,
+      "finger2": 154115,
+      "hands": 154028,
+      "head": 154029,
+      "legs": 154030,
+      "main_hand": 154025,
+      "neck": 154118,
+      "off_hand": 154025,
+      "shoulders": 154031,
+      "trinket1": 154116,
+      "trinket2": 154117,
+      "waist": 154032,
+      "wrists": 154033
+    },
+    "level": 90,
+    "metadata": {
+      "addon_version": "12.1.0-01",
+      "toc": 120100,
+      "wow_build": 69465,
+      "wow_version": "12.1.0"
+    },
+    "name": "PhaseOneAddon",
+    "race": "orc",
+    "region": "us",
+    "role": "attack",
+    "scalar_options": {
+      "position": "back"
+    },
+    "server": "area_52",
+    "simulation": {
+      "desired_targets": 1,
+      "fight_style": "Patchwerk",
+      "fixed_time": true,
+      "iterations": 100,
+      "max_time_seconds": 20,
+      "report_details": true,
+      "seed": 12345,
+      "threads": 1,
+      "vary_combat_length": 0.0
+    },
+    "source_kind": "addon_export",
+    "specialization": "fury",
+    "talents": {
+      "talents": "CgEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+  },
+  "simc_file": {
+    "actions": [
+      {
+        "key": "actions",
+        "value": "auto_attack"
+      },
+      {
+        "key": "actions+",
+        "value": "/raging_blow"
+      }
+    ],
+    "bag_items": [],
+    "channel": "unspecified",
+    "class": "warrior",
+    "equipped_ids": {},
+    "level": 90,
+    "metadata": null,
+    "name": "PhaseOneFile",
+    "race": "orc",
+    "region": null,
+    "role": "attack",
+    "scalar_options": {
+      "load_default_gear": "1",
+      "position": "back"
+    },
+    "server": null,
+    "simulation": {
+      "desired_targets": 1,
+      "fight_style": "Patchwerk",
+      "fixed_time": true,
+      "iterations": 100,
+      "max_time_seconds": 20,
+      "report_details": true,
+      "seed": 12345,
+      "threads": 1,
+      "vary_combat_length": 0.0
+    },
+    "source_kind": "simc_file",
+    "specialization": "fury",
+    "talents": {
+      "class_talents": "all",
+      "hero_talents": "1",
+      "spec_talents": "all"
+    }
+  }
+}

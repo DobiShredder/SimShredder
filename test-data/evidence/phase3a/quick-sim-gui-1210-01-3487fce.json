@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-25T20:44:37+09:00",
+  "platform": "aarch64-apple-darwin",
+  "minimumMacos": "26.0",
+  "simcVersion": "1210-01",
+  "simcRevision": "3487fce",
+  "checks": {
+    "workspaceClippy": "passed",
+    "workspaceTests": "passed",
+    "componentTests": 6,
+    "axeViolations": 0,
+    "catalogs": ["en", "ko"],
+    "screenshotBaselines": 11,
+    "offlineDesktopE2e": "passed",
+    "liveDesktopE2e": "passed",
+    "liveDesktopServiceSeconds": 33.0,
+    "productionWdioExcluded": true,
+    "bundleArchitecture": "arm64",
+    "bundleIdentifier": "dev.simshredder.desktop",
+    "bundleMinimumMacos": "26.0"
+  }
+}

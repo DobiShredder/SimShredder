@@ -1,0 +1,838 @@
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use serde::{Deserialize, Serialize};
+use simshredder_domain::{Item, ResultRuntimeIdentity};
+use simshredder_job_runner::{BatchInput, CancellationToken, EnqueueRequest, PersistentQueue};
+use simshredder_runtime_manager::RuntimeDoctor;
+use simshredder_top_gear::{
+    ActionState, BudgetSnapshot, EvaluatedLoadout, ItemVariant, Loadout, PlannedAction,
+    RankedLoadout, RejectionBreakdown, RuleManifest, SearchPreview, SearchRequest, WeaponKind,
+    build_action_states, build_profileset_stage_input, derive_action_plan, generate_loadouts,
+    parse_profileset_results, rank_results,
+};
+
+use super::{
+    DesktopService, Error, ExportView, JobView, QuickSimRequest, Result, cpu_preset,
+    prepare_request, read_regular,
+};
+
+const MAX_TOP_GEAR_COMBINATIONS: usize = 256;
+const MIN_STAGE_ITERATIONS: u32 = 100;
+const MAX_STAGE_ITERATIONS: u32 = 10_000_000;
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TopGearRequest {
+    pub quick: QuickSimRequest,
+    pub variants: Vec<ItemVariant>,
+    pub balances: BTreeMap<String, u32>,
+    pub reserves: BTreeMap<String, u32>,
+    pub currency_confirmed_at_unix_seconds: u64,
+    pub rule_revision: String,
+    pub game_build: u32,
+    pub combination_limit: usize,
+    pub low_iterations: u32,
+    pub high_iterations: u32,
+    pub finalist_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedTopGear {
+    pub profile_name: String,
+    pub rule_revision: String,
+    pub rule_source: String,
+    pub raw_combinations: u64,
+    pub valid_combinations: u64,
+    pub execution_count: usize,
+    pub finalist_count: usize,
+    pub estimated: bool,
+    pub rejections: RejectionBreakdown,
+    pub generated_input: String,
+    pub variants: Vec<ItemVariant>,
+    pub loadouts: Vec<Loadout>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TopGearSessionView {
+    pub id: String,
+    pub stage: String,
+    pub current_job: JobView,
+    pub low_job_id: i64,
+    pub high_job_id: Option<i64>,
+    pub action_job_id: Option<i64>,
+    pub completed_executions: usize,
+    pub total_executions: usize,
+    pub can_advance: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TopGearResultView {
+    pub session_id: String,
+    pub baseline_key: String,
+    pub rule_revision: String,
+    pub ranked: Vec<RankedLoadout>,
+    pub low_job_id: i64,
+    pub high_job_id: i64,
+    pub action_job_id: Option<i64>,
+    pub action_plan: Vec<PlannedAction>,
+    pub estimated: bool,
+    pub final_generated_input: String,
+    pub runtime: ResultRuntimeIdentity,
+    pub budget: BudgetSnapshot,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TopGearSession {
+    schema_version: u32,
+    id: String,
+    request: TopGearRequest,
+    loadouts: Vec<Loadout>,
+    baseline_key: String,
+    low_job_id: i64,
+    high_job_id: Option<i64>,
+    finalist_keys: Vec<String>,
+    #[serde(default)]
+    action_job_id: Option<i64>,
+    #[serde(default)]
+    action_states: Vec<ActionState>,
+    #[serde(default)]
+    action_finalized: bool,
+    #[serde(default)]
+    estimated: bool,
+}
+
+pub struct StartedTopGear {
+    pub view: TopGearSessionView,
+    pub job_id: Option<i64>,
+    pub token: Option<CancellationToken>,
+}
+
+impl DesktopService {
+    pub fn prepare_top_gear(&self, request: &TopGearRequest) -> Result<PreparedTopGear> {
+        let (prepared, cpu_plan) = prepare_request(&request.quick)?;
+        let rules = bundled_rules()?;
+        validate_top_gear_request(request)?;
+        let variants = if request.variants.is_empty() {
+            default_variants(&prepared.profile)
+        } else {
+            request.variants.clone()
+        };
+        let candidates = group_candidates(&variants);
+        let preview = generate_loadouts(
+            &rules,
+            &SearchRequest {
+                expected_rule_revision: request.rule_revision.clone(),
+                game_build: request.game_build,
+                candidates,
+                budget: BudgetSnapshot {
+                    balances: request.balances.clone(),
+                    reserves: request.reserves.clone(),
+                    confirmed_at_unix_seconds: request.currency_confirmed_at_unix_seconds,
+                },
+                max_combinations: request.combination_limit,
+            },
+        )?;
+        unique_baseline(&preview)?;
+        let generated = build_profileset_stage_input(
+            &prepared.generated_bytes,
+            &preview.loadouts,
+            Some(request.low_iterations),
+            Some(cpu_plan.profileset_work_threads),
+        )?;
+        let finalists = request.finalist_count.min(preview.loadouts.len()).max(1);
+        Ok(PreparedTopGear {
+            profile_name: prepared.profile.name,
+            rule_revision: rules.revision,
+            rule_source: rules.source,
+            raw_combinations: preview.raw_combinations,
+            valid_combinations: preview.valid_combinations,
+            execution_count: preview.loadouts.len() + finalists,
+            finalist_count: finalists,
+            estimated: preview.was_truncated,
+            rejections: preview.rejections,
+            generated_input: String::from_utf8(generated).map_err(|_| {
+                Error::InvalidRequest("generated Top Gear input is not UTF-8".into())
+            })?,
+            variants,
+            loadouts: preview.loadouts,
+        })
+    }
+
+    pub fn start_top_gear(
+        &self,
+        request: &TopGearRequest,
+        runtime: &RuntimeDoctor,
+    ) -> Result<StartedTopGear> {
+        let preview = self.prepare_top_gear(request)?;
+        let (prepared, _) = prepare_request(&request.quick)?;
+        let baseline_key = preview
+            .loadouts
+            .iter()
+            .find(|loadout| loadout.changed_slots == 0)
+            .ok_or_else(|| Error::InvalidRequest("prepared Top Gear baseline is missing".into()))?
+            .key
+            .clone();
+        let mut queue = self.queue()?;
+        let enqueued = enqueue_stage(
+            &mut queue,
+            &prepared,
+            preview.generated_input.as_bytes(),
+            request,
+            runtime,
+        )?;
+        let id = new_session_id()?;
+        let session = TopGearSession {
+            schema_version: 1,
+            id: id.clone(),
+            request: request.clone(),
+            loadouts: preview.loadouts,
+            baseline_key,
+            low_job_id: enqueued.job_id,
+            high_job_id: None,
+            finalist_keys: Vec::new(),
+            action_job_id: None,
+            action_states: Vec::new(),
+            action_finalized: false,
+            estimated: preview.estimated,
+        };
+        self.write_top_gear_session(&session)?;
+        let token = queue.cancel_handle(enqueued.job_id).token();
+        Ok(StartedTopGear {
+            view: self.top_gear_status(&id)?,
+            job_id: Some(enqueued.job_id),
+            token: Some(token),
+        })
+    }
+
+    pub fn top_gear_status(&self, session_id: &str) -> Result<TopGearSessionView> {
+        let session = self.read_top_gear_session(session_id)?;
+        let current_job_id = session
+            .action_job_id
+            .or(session.high_job_id)
+            .unwrap_or(session.low_job_id);
+        let current_job = self.job(current_job_id)?;
+        let low = self.job(session.low_job_id)?;
+        let high = session
+            .high_job_id
+            .map(|job_id| self.job(job_id))
+            .transpose()?;
+        let action = session
+            .action_job_id
+            .map(|job_id| self.job(job_id))
+            .transpose()?;
+        let stage = if session.action_finalized
+            || action.as_ref().is_some_and(|job| job.state == "succeeded")
+        {
+            "complete"
+        } else if session.action_job_id.is_some() {
+            "action_plan"
+        } else if session.high_job_id.is_some() {
+            "high_precision"
+        } else {
+            "low_precision"
+        };
+        let low_count = if low.state == "succeeded" {
+            session.loadouts.len()
+        } else {
+            0
+        };
+        let high_count = if high.as_ref().is_some_and(|job| job.state == "succeeded") {
+            session.finalist_keys.len()
+        } else {
+            0
+        };
+        let action_count = if action.as_ref().is_some_and(|job| job.state == "succeeded") {
+            session.action_states.len()
+        } else {
+            0
+        };
+        let can_advance = if session.high_job_id.is_none() {
+            low.state == "succeeded"
+        } else {
+            session.action_job_id.is_none()
+                && !session.action_finalized
+                && high.as_ref().is_some_and(|job| job.state == "succeeded")
+        };
+        Ok(TopGearSessionView {
+            id: session.id,
+            stage: stage.into(),
+            current_job,
+            low_job_id: session.low_job_id,
+            high_job_id: session.high_job_id,
+            action_job_id: session.action_job_id,
+            completed_executions: low_count + high_count + action_count,
+            total_executions: session.loadouts.len()
+                + session
+                    .request
+                    .finalist_count
+                    .min(session.loadouts.len())
+                    .max(1)
+                + session.action_states.len(),
+            can_advance,
+        })
+    }
+
+    pub fn top_gear_sessions(&self) -> Result<Vec<TopGearSessionView>> {
+        let root = self.top_gear_root();
+        if !root.exists() {
+            return Ok(Vec::new());
+        }
+        let mut ids = Vec::new();
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_file()
+                && path.extension().and_then(|value| value.to_str()) == Some("json")
+                && let Some(id) = path.file_stem().and_then(|value| value.to_str())
+            {
+                ids.push(id.to_owned());
+            }
+        }
+        ids.sort();
+        ids.into_iter()
+            .map(|id| self.top_gear_status(&id))
+            .collect()
+    }
+
+    pub fn advance_top_gear(
+        &self,
+        session_id: &str,
+        runtime: &RuntimeDoctor,
+    ) -> Result<StartedTopGear> {
+        let mut session = self.read_top_gear_session(session_id)?;
+        if let Some(high_job_id) = session.high_job_id {
+            if session.action_job_id.is_some() || session.action_finalized {
+                return Err(Error::InvalidRequest(
+                    "Top Gear action stage already exists".into(),
+                ));
+            }
+            if self.job(high_job_id)?.state != "succeeded" {
+                return Err(Error::InvalidRequest(
+                    "high-precision stage is not complete".into(),
+                ));
+            }
+            let high_results = self.profileset_results(high_job_id)?;
+            let evaluations = match_evaluations(&session.loadouts, &high_results)?;
+            let baseline = evaluations
+                .iter()
+                .find(|entry| entry.loadout.key == session.baseline_key)
+                .ok_or_else(|| Error::InvalidRequest("baseline result is missing".into()))?;
+            let ranked = rank_results(baseline.mean, baseline.mean_error, evaluations)?;
+            let winner = &ranked
+                .first()
+                .ok_or_else(|| Error::InvalidRequest("finalist result is empty".into()))?
+                .loadout;
+            let baseline_loadout = session
+                .loadouts
+                .iter()
+                .find(|loadout| loadout.key == session.baseline_key)
+                .ok_or_else(|| Error::InvalidRequest("baseline loadout is missing".into()))?;
+            let states = build_action_states(baseline_loadout, winner)?;
+            if winner.items.values().all(|item| item.actions.is_empty()) {
+                session.action_finalized = true;
+                self.write_top_gear_session(&session)?;
+                return Ok(StartedTopGear {
+                    view: self.top_gear_status(session_id)?,
+                    job_id: None,
+                    token: None,
+                });
+            }
+            let (prepared, cpu_plan) = prepare_request(&session.request.quick)?;
+            let state_loadouts: Vec<_> = states.iter().map(|state| state.loadout.clone()).collect();
+            let generated = build_profileset_stage_input(
+                &prepared.generated_bytes,
+                &state_loadouts,
+                Some(session.request.high_iterations),
+                Some(cpu_plan.profileset_work_threads),
+            )?;
+            let mut queue = self.queue()?;
+            let enqueued =
+                enqueue_stage(&mut queue, &prepared, &generated, &session.request, runtime)?;
+            session.action_job_id = Some(enqueued.job_id);
+            session.action_states = states;
+            self.write_top_gear_session(&session)?;
+            let token = queue.cancel_handle(enqueued.job_id).token();
+            return Ok(StartedTopGear {
+                view: self.top_gear_status(session_id)?,
+                job_id: Some(enqueued.job_id),
+                token: Some(token),
+            });
+        }
+        if self.job(session.low_job_id)?.state != "succeeded" {
+            return Err(Error::InvalidRequest(
+                "low-precision stage is not complete".into(),
+            ));
+        }
+        let low_results = self.profileset_results(session.low_job_id)?;
+        let mut evaluations = match_evaluations(&session.loadouts, &low_results)?;
+        evaluations.sort_by(|left, right| right.mean.total_cmp(&left.mean));
+        let mut finalist_keys = vec![session.baseline_key.clone()];
+        for evaluation in evaluations {
+            if finalist_keys.len()
+                >= session
+                    .request
+                    .finalist_count
+                    .min(session.loadouts.len())
+                    .max(1)
+            {
+                break;
+            }
+            if !finalist_keys.contains(&evaluation.loadout.key) {
+                finalist_keys.push(evaluation.loadout.key);
+            }
+        }
+        let finalists: Vec<_> = finalist_keys
+            .iter()
+            .filter_map(|key| session.loadouts.iter().find(|loadout| &loadout.key == key))
+            .cloned()
+            .collect();
+        let (prepared, cpu_plan) = prepare_request(&session.request.quick)?;
+        let generated = build_profileset_stage_input(
+            &prepared.generated_bytes,
+            &finalists,
+            Some(session.request.high_iterations),
+            Some(cpu_plan.profileset_work_threads),
+        )?;
+        let mut queue = self.queue()?;
+        let enqueued = enqueue_stage(&mut queue, &prepared, &generated, &session.request, runtime)?;
+        session.high_job_id = Some(enqueued.job_id);
+        session.finalist_keys = finalist_keys;
+        self.write_top_gear_session(&session)?;
+        let token = queue.cancel_handle(enqueued.job_id).token();
+        Ok(StartedTopGear {
+            view: self.top_gear_status(session_id)?,
+            job_id: Some(enqueued.job_id),
+            token: Some(token),
+        })
+    }
+
+    pub fn top_gear_result(&self, session_id: &str) -> Result<TopGearResultView> {
+        let session = self.read_top_gear_session(session_id)?;
+        let high_job_id = session
+            .high_job_id
+            .ok_or_else(|| Error::InvalidRequest("high-precision stage has not started".into()))?;
+        if self.job(high_job_id)?.state != "succeeded" {
+            return Err(Error::ResultUnavailable(high_job_id));
+        }
+        let results = self.profileset_results(high_job_id)?;
+        let evaluations = match_evaluations(&session.loadouts, &results)?;
+        let baseline = evaluations
+            .iter()
+            .find(|entry| entry.loadout.key == session.baseline_key)
+            .ok_or_else(|| Error::InvalidRequest("baseline result is missing".into()))?;
+        let ranked = rank_results(baseline.mean, baseline.mean_error, evaluations)?;
+        let winner = &ranked
+            .first()
+            .ok_or_else(|| Error::InvalidRequest("finalist result is empty".into()))?
+            .loadout;
+        let action_plan = if let Some(action_job_id) = session.action_job_id {
+            if self.job(action_job_id)?.state != "succeeded" {
+                return Err(Error::ResultUnavailable(action_job_id));
+            }
+            let actions: Vec<_> = winner
+                .items
+                .values()
+                .flat_map(|item| item.actions.iter().cloned())
+                .collect();
+            derive_action_plan(
+                &actions,
+                &session.action_states,
+                &self.profileset_results(action_job_id)?,
+                &BudgetSnapshot {
+                    balances: session.request.balances.clone(),
+                    reserves: session.request.reserves.clone(),
+                    confirmed_at_unix_seconds: session.request.currency_confirmed_at_unix_seconds,
+                },
+            )?
+        } else {
+            Vec::new()
+        };
+        let mut final_prepared = prepare_request(&session.request.quick)?.0;
+        final_prepared.profile.simulation.iterations = session.request.high_iterations;
+        final_prepared.profile.equipped = winner
+            .items
+            .iter()
+            .map(|(slot, variant)| {
+                (
+                    *slot,
+                    Item {
+                        slot: *slot,
+                        id: variant.source_item_id,
+                        options: variant.simc_options.clone(),
+                    },
+                )
+            })
+            .collect();
+        let final_prepared = simshredder_core::prepare_profile(
+            &final_prepared.source_bytes,
+            final_prepared.profile,
+        )?;
+        let high_result = self.result(high_job_id)?;
+        Ok(TopGearResultView {
+            session_id: session.id,
+            baseline_key: session.baseline_key,
+            rule_revision: session.request.rule_revision,
+            ranked,
+            low_job_id: session.low_job_id,
+            high_job_id,
+            action_job_id: session.action_job_id,
+            action_plan,
+            estimated: session.estimated,
+            final_generated_input: String::from_utf8(final_prepared.generated_bytes)
+                .map_err(|_| Error::InvalidRequest("final Top Gear input is not UTF-8".into()))?,
+            runtime: high_result.result.runtime,
+            budget: BudgetSnapshot {
+                balances: session.request.balances,
+                reserves: session.request.reserves,
+                confirmed_at_unix_seconds: session.request.currency_confirmed_at_unix_seconds,
+            },
+        })
+    }
+
+    pub fn export_top_gear(&self, session_id: &str, destination_root: &Path) -> Result<ExportView> {
+        let session = self.read_top_gear_session(session_id)?;
+        let result = self.top_gear_result(session_id)?;
+        let low = self.result(session.low_job_id)?;
+        let high = self.result(result.high_job_id)?;
+        let mut files = vec![
+            (
+                "final.simc".to_owned(),
+                result.final_generated_input.as_bytes().to_vec(),
+            ),
+            ("plan.json".to_owned(), serde_json::to_vec_pretty(&result)?),
+            ("low-result.json".to_owned(), low.raw_json.into_bytes()),
+            ("high-result.json".to_owned(), high.raw_json.into_bytes()),
+            ("high-report.html".to_owned(), high.raw_html.into_bytes()),
+        ];
+        if let Some(action_job_id) = result.action_job_id {
+            let action = self.result(action_job_id)?;
+            files.push((
+                "action-result.json".to_owned(),
+                action.raw_json.into_bytes(),
+            ));
+        }
+        fs::create_dir_all(destination_root)?;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| Error::InvalidRequest("system clock is before the Unix epoch".into()))?
+            .as_millis();
+        let destination = destination_root.join(format!("top-gear-{session_id}-{timestamp}"));
+        let staging = destination_root.join(format!(
+            ".top-gear-{session_id}-{timestamp}-{}.staging",
+            std::process::id()
+        ));
+        fs::create_dir(&staging)?;
+        super::protect_directory(&staging)?;
+        for (name, bytes) in &files {
+            let path = staging.join(name);
+            fs::write(&path, bytes)?;
+            super::protect_file(&path)?;
+        }
+        fs::rename(staging, &destination)?;
+        Ok(ExportView {
+            directory: destination,
+            file_count: files.len(),
+        })
+    }
+
+    fn profileset_results(
+        &self,
+        job_id: i64,
+    ) -> Result<Vec<simshredder_top_gear::ProfilesetResult>> {
+        let result = self.result(job_id)?;
+        let document: serde_json::Value = serde_json::from_str(&result.raw_json)?;
+        Ok(parse_profileset_results(&document)?)
+    }
+
+    fn top_gear_root(&self) -> PathBuf {
+        self.run_root
+            .parent()
+            .unwrap_or(&self.run_root)
+            .join("top-gear-sessions")
+    }
+
+    fn session_path(&self, session_id: &str) -> Result<PathBuf> {
+        if session_id.is_empty()
+            || session_id.len() > 80
+            || !session_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(Error::InvalidRequest("unsafe Top Gear session id".into()));
+        }
+        Ok(self.top_gear_root().join(format!("{session_id}.json")))
+    }
+
+    fn read_top_gear_session(&self, session_id: &str) -> Result<TopGearSession> {
+        let path = self.session_path(session_id)?;
+        let session: TopGearSession = serde_json::from_slice(&read_regular(&path)?)?;
+        if session.schema_version != 1 || session.id != session_id {
+            return Err(Error::InvalidRequest(
+                "Top Gear session identity is invalid".into(),
+            ));
+        }
+        Ok(session)
+    }
+
+    fn write_top_gear_session(&self, session: &TopGearSession) -> Result<()> {
+        let root = self.top_gear_root();
+        fs::create_dir_all(&root)?;
+        super::protect_directory(&root)?;
+        let path = self.session_path(&session.id)?;
+        let staging = path.with_extension(format!("json.{}.staging", std::process::id()));
+        let mut bytes = serde_json::to_vec_pretty(session)?;
+        bytes.push(b'\n');
+        fs::write(&staging, bytes)?;
+        super::protect_file(&staging)?;
+        fs::rename(staging, path)?;
+        Ok(())
+    }
+}
+
+fn bundled_rules() -> Result<RuleManifest> {
+    Ok(serde_json::from_str(include_str!(
+        "../../../../resources/rules/12.1.0-69465-v1.json"
+    ))?)
+}
+
+fn validate_top_gear_request(request: &TopGearRequest) -> Result<()> {
+    if !(1..=MAX_TOP_GEAR_COMBINATIONS).contains(&request.combination_limit) {
+        return Err(Error::InvalidRequest(format!(
+            "combination limit must be between 1 and {MAX_TOP_GEAR_COMBINATIONS}"
+        )));
+    }
+    if !(MIN_STAGE_ITERATIONS..=MAX_STAGE_ITERATIONS).contains(&request.low_iterations)
+        || !(MIN_STAGE_ITERATIONS..=MAX_STAGE_ITERATIONS).contains(&request.high_iterations)
+        || request.high_iterations < request.low_iterations
+        || request.finalist_count == 0
+        || request.finalist_count > request.combination_limit
+    {
+        return Err(Error::InvalidRequest(
+            "Top Gear stage precision is invalid".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn default_variants(profile: &simshredder_domain::Profile) -> Vec<ItemVariant> {
+    let mut variants = Vec::new();
+    for (slot, item) in &profile.equipped {
+        variants.push(ItemVariant {
+            key: format!("worn-{}-{}", slot.simc_token(), item.id),
+            source_item_id: item.id,
+            slot: *slot,
+            rank: 0,
+            gem_ids: parse_gems(item.options.get("gem_id")),
+            enchant_id: item
+                .options
+                .get("enchant_id")
+                .and_then(|value| value.parse().ok()),
+            simc_options: item.options.clone(),
+            cost: BTreeMap::new(),
+            actions: Vec::new(),
+            unique_groups: Default::default(),
+            weapon_kind: WeaponKind::None,
+            embellishment: false,
+            changed: false,
+        });
+    }
+    for (index, bag) in profile.bag_items.iter().enumerate() {
+        variants.push(ItemVariant {
+            key: format!("bag-{}-{}-{index}", bag.item.slot.simc_token(), bag.item.id),
+            source_item_id: bag.item.id,
+            slot: bag.item.slot,
+            rank: 0,
+            gem_ids: parse_gems(bag.item.options.get("gem_id")),
+            enchant_id: bag
+                .item
+                .options
+                .get("enchant_id")
+                .and_then(|value| value.parse().ok()),
+            simc_options: bag.item.options.clone(),
+            cost: BTreeMap::new(),
+            actions: Vec::new(),
+            unique_groups: Default::default(),
+            weapon_kind: WeaponKind::None,
+            embellishment: false,
+            changed: true,
+        });
+    }
+    variants
+}
+
+fn parse_gems(value: Option<&String>) -> Vec<u32> {
+    value
+        .into_iter()
+        .flat_map(|value| value.split('/'))
+        .filter_map(|value| value.parse().ok())
+        .collect()
+}
+
+fn group_candidates(
+    variants: &[ItemVariant],
+) -> BTreeMap<simshredder_domain::GearSlot, Vec<ItemVariant>> {
+    let mut grouped = BTreeMap::new();
+    for variant in variants {
+        grouped
+            .entry(variant.slot)
+            .or_insert_with(Vec::new)
+            .push(variant.clone());
+    }
+    grouped
+}
+
+fn unique_baseline(preview: &SearchPreview) -> Result<&Loadout> {
+    let mut baseline = preview
+        .loadouts
+        .iter()
+        .filter(|loadout| loadout.changed_slots == 0);
+    let first = baseline.next().ok_or_else(|| {
+        Error::InvalidRequest("Top Gear candidates must include the worn baseline".into())
+    })?;
+    if baseline.next().is_some() {
+        return Err(Error::InvalidRequest(
+            "Top Gear candidates contain multiple baselines".into(),
+        ));
+    }
+    Ok(first)
+}
+
+fn enqueue_stage(
+    queue: &mut PersistentQueue,
+    prepared: &simshredder_core::PreparedRun,
+    generated: &[u8],
+    request: &TopGearRequest,
+    runtime: &RuntimeDoctor,
+) -> Result<simshredder_job_runner::EnqueuedJob> {
+    Ok(queue.enqueue(EnqueueRequest {
+        profile: &prepared.profile,
+        batches: vec![BatchInput {
+            source_kind: prepared.profile.source_kind,
+            source_bytes: prepared.source_bytes.clone(),
+            generated_bytes: generated.to_vec(),
+        }],
+        executable: &runtime.executable,
+        expected_revision: &runtime.record.build,
+        cpu_preset: cpu_preset(request.quick.cpu_preset),
+        timeout: Duration::from_secs(60 * 60),
+        rule_revision: &request.rule_revision,
+    })?)
+}
+
+fn match_evaluations(
+    loadouts: &[Loadout],
+    results: &[simshredder_top_gear::ProfilesetResult],
+) -> Result<Vec<EvaluatedLoadout>> {
+    results
+        .iter()
+        .map(|result| {
+            let loadout = loadouts
+                .iter()
+                .find(|loadout| loadout.key == result.key)
+                .cloned()
+                .ok_or_else(|| {
+                    Error::InvalidRequest(format!("unknown profileset result {}", result.key))
+                })?;
+            Ok(EvaluatedLoadout {
+                loadout,
+                mean: result.mean,
+                mean_error: result.mean_error,
+            })
+        })
+        .collect()
+}
+
+fn new_session_id() -> Result<String> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Error::InvalidRequest("system clock is before the Unix epoch".into()))?
+        .as_millis();
+    Ok(format!("tg-{timestamp}-{}", std::process::id()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use simshredder_domain::GearSlot;
+    use simshredder_top_gear::WeaponKind;
+
+    use super::*;
+    use crate::{CpuChoice, SourceFormat};
+
+    fn request() -> TopGearRequest {
+        let item = |key: &str, changed: bool| ItemVariant {
+            key: key.into(),
+            source_item_id: 154029,
+            slot: GearSlot::Head,
+            rank: 1,
+            gem_ids: Vec::new(),
+            enchant_id: None,
+            simc_options: if changed {
+                BTreeMap::from([("bonus_id".into(), "100/200".into())])
+            } else {
+                BTreeMap::new()
+            },
+            cost: BTreeMap::from([("crest".into(), u32::from(changed) * 2)]),
+            actions: Vec::new(),
+            unique_groups: BTreeSet::new(),
+            weapon_kind: WeaponKind::None,
+            embellishment: false,
+            changed,
+        };
+        TopGearRequest {
+            quick: QuickSimRequest {
+                source: "warrior=Core\nlevel=90\nrace=orc\nrole=attack\nspec=fury\nhead=,id=154029\nload_default_gear=1\n".into(),
+                format: SourceFormat::SimcFile,
+                iterations: 100,
+                fixed_time: true,
+                max_time_seconds: 30,
+                vary_combat_length: 0.0,
+                desired_targets: 1,
+                fight_style: "Patchwerk".into(),
+                cpu_preset: CpuChoice::Balanced,
+            },
+            variants: vec![item("worn", false), item("upgraded", true)],
+            balances: BTreeMap::from([("crest".into(), 10)]),
+            reserves: BTreeMap::from([("crest".into(), 2)]),
+            currency_confirmed_at_unix_seconds: 1,
+            rule_revision: "12.1.0-69465-v1".into(),
+            game_build: 69465,
+            combination_limit: 16,
+            low_iterations: 100,
+            high_iterations: 200,
+            finalist_count: 2,
+        }
+    }
+
+    #[test]
+    fn preview_and_execution_counts_share_the_same_iterator() {
+        let temporary = tempfile::tempdir().unwrap();
+        let service = DesktopService::open(temporary.path()).unwrap();
+        let preview = service.prepare_top_gear(&request()).unwrap();
+        assert_eq!(preview.raw_combinations, 2);
+        assert_eq!(preview.valid_combinations, 2);
+        assert_eq!(preview.execution_count, 4);
+        assert!(preview.generated_input.contains("profileset."));
+        assert!(preview.generated_input.contains("iterations=100\n"));
+    }
+
+    #[test]
+    fn stale_rule_blocks_top_gear_without_affecting_quick_prepare() {
+        let temporary = tempfile::tempdir().unwrap();
+        let service = DesktopService::open(temporary.path()).unwrap();
+        let mut stale = request();
+        stale.rule_revision = "stale".into();
+        assert!(service.prepare_top_gear(&stale).is_err());
+        assert!(service.prepare(&stale.quick).is_ok());
+    }
+}

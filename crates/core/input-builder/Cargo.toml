@@ -1,0 +1,16 @@
+[package]
+name = "input-builder"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+simshredder-domain = { path = "../domain" }
+thiserror.workspace = true
+
+[dev-dependencies]
+profile-parser = { path = "../profile-parser" }
+
+[lints]
+workspace = true

@@ -1,0 +1,48 @@
+# PhaseOneAddon - Fury - 2026-08-25 18:00 - US/Area 52
+# SimC Addon 12.1.0-01
+# WoW 12.1.0.69465, TOC 120100
+# Requires SimulationCraft 1210-01 or newer
+
+warrior="PhaseOneAddon"
+level=90
+race=orc
+region=us
+server=area_52
+role=attack
+spec=fury
+position=back
+
+talents=CgEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+
+# Oathsworn Helm
+head=,id=154029
+neck=,id=154118
+shoulders=,id=154031
+back=,id=154119
+chest=,id=154026
+wrists=,id=154033
+hands=,id=154028
+waist=,id=154032
+legs=,id=154030
+feet=,id=154027
+finger1=,id=154114
+finger2=,id=154115
+trinket1=,id=154116
+trinket2=,id=154117
+main_hand=,id=154025
+off_hand=,id=154025
+
+### Gear from Bags
+#
+# Candidate Helm (265)
+# head=,id=154029,bonus_id=100/200
+
+iterations=100
+fixed_time=1
+max_time=20
+vary_combat_length=0
+desired_targets=1
+fight_style=Patchwerk
+threads=1
+seed=12345
+report_details=1

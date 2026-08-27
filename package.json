@@ -1,0 +1,16 @@
+{
+  "private": true,
+  "scripts": {
+    "build": "pnpm --filter @simshredder/desktop build",
+    "check": "pnpm --filter @simshredder/desktop check",
+    "dev": "pnpm --filter @simshredder/desktop dev",
+    "e2e:build": "pnpm --filter @simshredder/desktop e2e:build",
+    "e2e": "pnpm --filter @simshredder/desktop e2e",
+    "tauri": "pnpm --filter @simshredder/desktop tauri",
+    "test": "pnpm --filter @simshredder/desktop test"
+  },
+  "engines": {
+    "node": "24.x"
+  },
+  "packageManager": "pnpm@11.23.0"
+}

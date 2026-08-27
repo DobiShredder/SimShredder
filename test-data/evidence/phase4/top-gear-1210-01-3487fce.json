@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-25T22:09:50+09:00",
+  "platform": "aarch64-apple-darwin",
+  "minimumMacos": "26.0",
+  "simcVersion": "1210-01",
+  "simcRevision": "3487fce",
+  "gameBuild": 69465,
+  "ruleRevision": "12.1.0-69465-v1",
+  "checks": {
+    "topGearUnitTests": 11,
+    "desktopComponentTests": 8,
+    "catalogs": ["en", "ko"],
+    "axeViolations": 0,
+    "exactPreviewAndExecutionIterator": "passed",
+    "exhaustiveOracle": "passed",
+    "multiCurrencyBudgetReserveAndPareto": "passed",
+    "stagedLowHighAndActionResimulation": "passed",
+    "liveDesktopServiceSeconds": 66.11,
+    "cancelRetrySessionRecovery": "passed",
+    "offlineDesktopE2e": "passed",
+    "liveDesktopE2e": "passed",
+    "liveDesktopE2eSeconds": 127.9,
+    "artifactExportFilesWithActionPlan": 6,
+    "boundedResultRows": 256,
+    "productionWdioExcluded": true,
+    "bundleArchitecture": "arm64",
+    "bundleIdentifier": "dev.simshredder.desktop",
+    "bundleMinimumMacos": "26.0",
+    "bundleSizeMiB": 20
+  }
+}
