@@ -71,7 +71,7 @@ jobs:
             echo 'capture_gui_baselines requires run_native' >&2
             exit 1
           fi
-      - run: node --test tooling/licenses/normalize-text-report.test.mjs tooling/runtime/verify-catalog-artifacts.test.mjs tooling/release/audit-public-history.test.mjs tooling/release/verify-manual-release-evidence.test.mjs tooling/release/verify-unsigned-candidate.test.mjs tooling/release/verify-windows-pe.test.mjs
+      - run: node --test tooling/licenses/generate-node-licenses.test.mjs tooling/licenses/normalize-text-report.test.mjs tooling/runtime/verify-catalog-artifacts.test.mjs tooling/release/audit-public-history.test.mjs tooling/release/verify-manual-release-evidence.test.mjs tooling/release/verify-unsigned-candidate.test.mjs tooling/release/verify-windows-pe.test.mjs
       - run: node tooling/release/verify-workflow-security.mjs
       - run: node tooling/release/audit-public-history.mjs
 

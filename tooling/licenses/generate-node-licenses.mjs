@@ -12,8 +12,16 @@ for (const entries of Object.values(report)) {
   for (const entry of entries) {
     for (const packagePath of entry.paths) {
       const manifest = JSON.parse(await readFile(join(packagePath, "package.json"), "utf8"));
-      packages.set(`${manifest.name}@${manifest.version}`, {
-        name: manifest.name,
+      // TypeScript 7 installs one native compiler package selected for the host.
+      // Give that equivalent package a stable report identity so a locked report
+      // generated on macOS, Windows, or Linux remains byte-for-byte identical.
+      const reportName = /^@typescript\/typescript-(?:aix|darwin|freebsd|linux|netbsd|openbsd|sunos|win32)-/.test(
+        manifest.name,
+      )
+        ? "@typescript/typescript-platform"
+        : manifest.name;
+      packages.set(`${reportName}@${manifest.version}`, {
+        name: reportName,
         version: manifest.version,
         license: manifest.license ?? entry.license,
         path: packagePath,

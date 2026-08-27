@@ -771,7 +771,7 @@ Declared license: MIT
         OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
         SOFTWARE
 
-## @typescript/typescript-darwin-arm64@7.0.2
+## @typescript/typescript-platform@7.0.2
 
 Declared license: Apache-2.0
 
