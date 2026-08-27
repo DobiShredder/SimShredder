@@ -35,7 +35,7 @@ $profile = $null
 $applicationProcess = $null
 
 try {
-  $user = New-LocalUser -Name $username -Password $securePassword -AccountNeverExpires -PasswordNeverExpires -Description 'Ephemeral SimShredder clean-user verification account'
+  $user = New-LocalUser -Name $username -Password $securePassword -AccountNeverExpires -PasswordNeverExpires -Description 'Temporary SimShredder test account'
   $usersMemberSids = @(Get-LocalGroupMember -SID 'S-1-5-32-545' | ForEach-Object { $_.SID.Value })
   if ($usersMemberSids -notcontains $user.SID.Value) { Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $user }
   $usersMemberSids = @(Get-LocalGroupMember -SID 'S-1-5-32-545' | ForEach-Object { $_.SID.Value })
