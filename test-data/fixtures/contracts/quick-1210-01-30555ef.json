@@ -1,0 +1,33 @@
+{
+  "git_revision": "30555ef",
+  "options": {
+    "iterations": 100,
+    "seed": 12345,
+    "threads": 1,
+    "version_used": "Live"
+  },
+  "player": {
+    "collected_data_keys": [
+      "action_sequence",
+      "action_sequence_precombat",
+      "buffed_stats",
+      "combat_end_resource",
+      "compound_dmg",
+      "dmg",
+      "dps",
+      "dpse",
+      "executed_foreground_actions",
+      "fight_length",
+      "resource_lost",
+      "resource_overflowed",
+      "resource_timelines",
+      "timeline_dmg"
+    ],
+    "level": 90,
+    "name": "Phase0Quick",
+    "role": "attack",
+    "specialization": "Fury Warrior"
+  },
+  "report_version": "2.0.0",
+  "version": "1210-01"
+}

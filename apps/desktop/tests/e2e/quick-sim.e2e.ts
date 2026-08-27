@@ -1,3 +1,6 @@
+const baselineCapture = process.env.SIMSHREDDER_E2E_ACCEPT_BASELINE === "1";
+const visualThreshold = (regressionThreshold: number) => baselineCapture ? Number.POSITIVE_INFINITY : regressionThreshold;
+
 describe("supported desktop shell", () => {
   it("opens the real Tauri app and prepares an exact character-analysis preview", async () => {
     const autoInstall = process.env.SIMSHREDDER_E2E_AUTO_INSTALL === "1";
@@ -31,7 +34,7 @@ describe("supported desktop shell", () => {
     await (await $("button=Home")).click();
     await expect($("h1")).toHaveText("WoW gear simulation");
     await browser.execute(() => (document.activeElement as HTMLElement | null)?.blur());
-    expect(await browser.checkScreen(`home-en-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(2);
+    expect(await browser.checkScreen(`home-en-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(2));
 
     await (await $("button=Settings")).click();
     await expect($("h1")).toHaveText("Prepare SimulationCraft");
@@ -56,7 +59,7 @@ describe("supported desktop shell", () => {
       (document.activeElement as HTMLElement | null)?.blur();
       window.scrollTo({ top: 0, left: 0, behavior: "auto" });
     });
-    expect(await browser.checkScreen(`settings-en-light-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(2);
+    expect(await browser.checkScreen(`settings-en-light-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(2));
 
     if (mode === "offline") {
       await (await $("h2=Storage locations")).waitForDisplayed();
@@ -93,7 +96,7 @@ describe("supported desktop shell", () => {
         };
       });
       expect(storageVisualContract).toEqual({ theme: "light", disabled: false, background: "rgb(255, 255, 255)" });
-      expect(await browser.checkScreen(`storage-en-light-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(2);
+      expect(await browser.checkScreen(`storage-en-light-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(2));
     }
 
     await (await $("button=Profile")).click();
@@ -102,7 +105,7 @@ describe("supported desktop shell", () => {
       (document.activeElement as HTMLElement | null)?.blur();
       window.scrollTo({ top: 0, left: 0, behavior: "auto" });
     });
-    expect(await browser.checkScreen(`import-en-light-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(2);
+    expect(await browser.checkScreen(`import-en-light-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(2));
     await (await $("button[aria-label*='Appearance']")).click();
     await (await $("label*=.simc file")).click();
     await (await $("textarea")).setValue(
@@ -152,7 +155,7 @@ describe("supported desktop shell", () => {
     }, "ko");
     await expect($("h1")).toHaveText("시뮬레이션 입력 확인");
     await browser.execute(() => (document.activeElement as HTMLElement | null)?.blur());
-    expect(await browser.checkScreen(`quick-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(2);
+    expect(await browser.checkScreen(`quick-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(2));
 
     await (await $("summary=고급 옵션")).click();
     await expect($("//label[contains(.,'대상 레벨')]//input")).toBeDisplayed();
@@ -162,7 +165,7 @@ describe("supported desktop shell", () => {
       if (advanced) window.scrollBy({ top: advanced.getBoundingClientRect().top - 121, behavior: "auto" });
       (document.activeElement as HTMLElement | null)?.blur();
     });
-    expect(await browser.checkScreen(`quick-advanced-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(2);
+    expect(await browser.checkScreen(`quick-advanced-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(2));
     await (await $("summary=고급 옵션")).click();
 
     await browser.execute(() => {
@@ -177,7 +180,7 @@ describe("supported desktop shell", () => {
     expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
     expect(layout.generatedPanelWidth).toBeGreaterThanOrEqual(320);
     await browser.execute(() => window.scrollTo({ top: 0, left: 0, behavior: "auto" }));
-    expect(await browser.checkScreen(`quick-ko-200-percent-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(2);
+    expect(await browser.checkScreen(`quick-ko-200-percent-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(2));
 
     await browser.execute(() => { document.documentElement.style.fontSize = "100%"; });
     if (mode === "live") {
@@ -208,7 +211,7 @@ describe("supported desktop shell", () => {
       expect(await browser.checkScreen("result-ko-dark", {
         ignoreAntialiasing: true,
         ignore: [$(".metric-grid"), $(".result-chart")],
-      })).toBeLessThan(3);
+      })).toBeLessThan(visualThreshold(3));
       await (await $("button=검증된 산출물 내보내기")).click();
       await expect($("p*=파일 5개를 내보냈습니다")).toBeDisplayed();
     }
@@ -233,10 +236,10 @@ describe("supported desktop shell", () => {
       (document.activeElement as HTMLElement | null)?.blur();
       window.scrollTo({ top: 0, left: 0, behavior: "auto" });
     });
-    expect(await browser.checkScreen(`top-gear-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(3);
+    expect(await browser.checkScreen(`top-gear-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(3));
     await browser.execute(() => document.querySelector("#optimizer-consumables")?.scrollIntoView({ block: "start", behavior: "auto" }));
     await expect($("h2=소모품 및 Omnium Folio")).toBeDisplayed();
-    expect(await browser.checkScreen(`top-gear-options-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(3);
+    expect(await browser.checkScreen(`top-gear-options-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(3));
 
     if (mode === "live") {
       await (await $("//label[contains(.,'넓은 탐색 반복 횟수')]//input")).setValue("100");

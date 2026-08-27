@@ -159,7 +159,7 @@ jobs:
       - name: Verify native Windows screenshot evidence exists
         shell: pwsh
         run: |
-          $tags = @('home-en-live','settings-en-light-live','import-en-light-live','quick-ko-live','quick-ko-200-percent-live','result-ko-dark','top-gear-ko-live')
+          $tags = @('home-en-live','settings-en-light-live','import-en-light-live','quick-ko-live','quick-advanced-ko-live','quick-ko-200-percent-live','result-ko-dark','top-gear-ko-live','top-gear-options-ko-live')
           foreach ($directory in @('apps/desktop/tests/e2e/baseline/windows-ci','target/wdio-visual/actual')) {
             foreach ($tag in $tags) {
               $matches = @(Get-ChildItem $directory -File -Filter "$tag-*.png")

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "sequence": 5,
-  "generated_at_unix_seconds": 1787730995,
-  "expires_at_unix_seconds": 1803282995,
+  "sequence": 6,
+  "generated_at_unix_seconds": 1787829393,
+  "expires_at_unix_seconds": 1803381393,
   "manifests": [
     {
       "schema_version": 1,
@@ -10,11 +10,11 @@
       "game_channel": "live",
       "platform": "macos",
       "architecture": "aarch64",
-      "build": "02b39ce",
-      "filename": "simc-1210-01-macos-02b39ce.dmg",
-      "url": "http://downloads.simulationcraft.org/nightly/simc-1210-01-macos-02b39ce.dmg",
-      "size": 227941280,
-      "sha256": "1b695a4f631def8bec4a0801f7d1b9b8495eb5b9b406487895b9f38300ff0637"
+      "build": "30555ef",
+      "filename": "simc-1210-01-macos-30555ef.dmg",
+      "url": "http://downloads.simulationcraft.org/nightly/simc-1210-01-macos-30555ef.dmg",
+      "size": 226173641,
+      "sha256": "2e248c6da7dda4807d22a309600c166143cc08d0b5c719e77bfef89e9eb3a17f"
     },
     {
       "schema_version": 1,
@@ -22,11 +22,11 @@
       "game_channel": "live",
       "platform": "windows",
       "architecture": "x86_64",
-      "build": "02b39ce",
-      "filename": "simc-1210.01.02b39ce-win64.7z",
-      "url": "http://downloads.simulationcraft.org/nightly/simc-1210.01.02b39ce-win64.7z",
-      "size": 120783595,
-      "sha256": "614995f7ebb370c5605813aadf927c26da9576d783923c806ddb3eb194ae147e"
+      "build": "30555ef",
+      "filename": "simc-1210.01.30555ef-win64.7z",
+      "url": "http://downloads.simulationcraft.org/nightly/simc-1210.01.30555ef-win64.7z",
+      "size": 120813654,
+      "sha256": "73f63aa928fa82a055368220ec7fc3bedeb1c5f9aae33255d51fda2dc13c5d6b"
     }
   ],
   "next_keys": [],

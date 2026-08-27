@@ -20,7 +20,7 @@ fn bundled_catalog_has_a_valid_production_signature() {
             now,
         )
         .unwrap();
-    assert_eq!(verified.payload.sequence, 5);
+    assert_eq!(verified.payload.sequence, 6);
     assert_eq!(verified.verified_by, vec!["runtime-release-2026-a"]);
     assert_eq!(verified.payload.manifests.len(), 2);
     assert!(verified.payload.manifests.iter().all(|manifest| {
@@ -30,6 +30,6 @@ fn bundled_catalog_has_a_valid_production_signature() {
     }));
     assert_eq!(
         verified.payload.manifests[0].sha256,
-        "1b695a4f631def8bec4a0801f7d1b9b8495eb5b9b406487895b9f38300ff0637"
+        "2e248c6da7dda4807d22a309600c166143cc08d0b5c719e77bfef89e9eb3a17f"
     );
 }

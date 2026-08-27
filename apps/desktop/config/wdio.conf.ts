@@ -34,7 +34,7 @@ function prepareLiveRuntime() {
   }
   const source = process.env.SIMSHREDDER_E2E_SIMC;
   if (!source) return;
-  const runtimeBuild = process.env.SIMSHREDDER_E2E_SIMC_BUILD ?? "02b39ce";
+  const runtimeBuild = process.env.SIMSHREDDER_E2E_SIMC_BUILD ?? "30555ef";
   const runtimeGameVersion = process.env.SIMSHREDDER_E2E_SIMC_GAME_VERSION ?? "12.1.0.69497";
   const id = `1210-01-${runtimeBuild}`;
   const runtimeRoot = path.join(testAppData, "simulationcraft");
