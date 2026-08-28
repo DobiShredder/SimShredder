@@ -15,7 +15,7 @@ use std::{collections::BTreeMap, str::FromStr};
 use regex::Regex;
 use simshredder_domain::{
     ActionDirective, AddonMetadata, BagItem, CharacterClass, GameChannel, GearSlot, Item, Profile,
-    Role, SimulationOptions, SourceKind, TalentLoadout,
+    Role, SimulationOptions, SlotHighWatermark, SourceKind, TalentLoadout, UpgradeMetadata,
 };
 use thiserror::Error;
 
@@ -50,6 +50,7 @@ struct ProfileDraft {
     saved_talent_loadouts: Vec<TalentLoadout>,
     equipped: BTreeMap<GearSlot, Item>,
     bag_items: Vec<BagItem>,
+    upgrade_metadata: UpgradeMetadata,
     actions: Vec<ActionDirective>,
     simulation: SimulationOptions,
 }
@@ -119,8 +120,22 @@ pub fn project_profile(document: &SimcDocument, source_kind: SourceKind) -> Resu
             continue;
         }
         if let Some(comment) = line.strip_prefix('#') {
+            let comment = comment.trim();
+            if let Some((key, value)) = comment.split_once('=')
+                && matches!(
+                    key.trim(),
+                    "upgrade_currencies" | "upgrade_achievements" | "slot_high_watermarks"
+                )
+            {
+                project_upgrade_metadata(
+                    &mut draft.upgrade_metadata,
+                    key.trim(),
+                    value.trim(),
+                    line_number,
+                )?;
+                continue;
+            }
             if in_bag_section {
-                let comment = comment.trim();
                 if comment.is_empty() {
                     pending_bag_name = None;
                 } else if let Some((key, value)) = comment.split_once('=') {
@@ -140,7 +155,6 @@ pub fn project_profile(document: &SimcDocument, source_kind: SourceKind) -> Resu
                     });
                 }
             } else {
-                let comment = comment.trim();
                 if let Some(name) = comment.strip_prefix("Saved Loadout:") {
                     pending_saved_loadout_name = Some(name.trim().to_owned());
                 } else if let Some(value) = comment.strip_prefix("talents=")
@@ -277,9 +291,78 @@ pub fn project_profile(document: &SimcDocument, source_kind: SourceKind) -> Resu
         saved_talent_loadouts: draft.saved_talent_loadouts,
         equipped: draft.equipped,
         bag_items: draft.bag_items,
+        upgrade_metadata: (!draft.upgrade_metadata.raw_fields.is_empty())
+            .then_some(draft.upgrade_metadata),
         actions: draft.actions,
         simulation: draft.simulation,
     })
+}
+
+fn project_upgrade_metadata(
+    metadata: &mut UpgradeMetadata,
+    key: &str,
+    value: &str,
+    line: usize,
+) -> Result<()> {
+    if metadata.raw_fields.contains_key(key) {
+        return invalid(line, format!("duplicate {key} metadata"));
+    }
+    metadata.raw_fields.insert(key.to_owned(), value.to_owned());
+    metadata.source_lines.insert(key.to_owned(), line);
+    match key {
+        "upgrade_currencies" => {
+            for entry in value.split('/').filter(|entry| !entry.is_empty()) {
+                let mut parts = entry.split(':');
+                let kind = parts.next().unwrap_or_default();
+                let id = parts.next().unwrap_or_default();
+                let amount = parts.next().unwrap_or_default();
+                if !matches!(kind, "c" | "i")
+                    || id.parse::<u32>().is_err()
+                    || parts.next().is_some()
+                {
+                    return invalid(line, "invalid upgrade_currencies metadata");
+                }
+                metadata.currencies.insert(
+                    format!("{kind}:{id}"),
+                    parse_number(amount, line, "upgrade currency amount")?,
+                );
+            }
+        }
+        "upgrade_achievements" => {
+            metadata.achievements = value
+                .split('/')
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| parse_number(entry, line, "upgrade achievement"))
+                .collect::<Result<Vec<_>>>()?;
+        }
+        "slot_high_watermarks" => {
+            for entry in value.split('/').filter(|entry| !entry.is_empty()) {
+                let parts = entry.split(':').collect::<Vec<_>>();
+                if parts.len() != 3 {
+                    return invalid(line, "invalid slot_high_watermarks metadata");
+                }
+                let slot_index = parse_number(parts[0], line, "slot watermark index")?;
+                metadata.slot_high_watermarks.insert(
+                    slot_index,
+                    SlotHighWatermark {
+                        slot_index,
+                        character_item_level: parse_number(
+                            parts[1],
+                            line,
+                            "character slot high watermark",
+                        )?,
+                        account_item_level: parse_number(
+                            parts[2],
+                            line,
+                            "account slot high watermark",
+                        )?,
+                    },
+                );
+            }
+        }
+        _ => unreachable!("caller filters metadata keys"),
+    }
+    Ok(())
 }
 
 fn looks_like_item_comment(comment: &str) -> bool {
@@ -718,6 +801,20 @@ mod tests {
                 value: "SAVED".into(),
             }]
         );
+    }
+
+    #[test]
+    fn projects_upgrade_metadata_without_changing_the_lossless_document() {
+        let source = "# SimC Addon 12.1.0-1\n# WoW 12.1.0.69465, TOC 120100\nrogue=Tester\nlevel=90\nrace=human\nrole=attack\nspec=subtlety\n# upgrade_currencies=c:1792:2206/i:204195:4\n# upgrade_achievements=40943/42768\n# slot_high_watermarks=0:415:418/12:398:402\n";
+        let document = parse_document(source).unwrap();
+        assert_eq!(document.as_bytes(), source.as_bytes());
+        let profile = project_profile(&document, SourceKind::AddonExport).unwrap();
+        let metadata = profile.upgrade_metadata.unwrap();
+        assert_eq!(metadata.currencies["c:1792"], 2206);
+        assert_eq!(metadata.currencies["i:204195"], 4);
+        assert_eq!(metadata.achievements, vec![40943, 42768]);
+        assert_eq!(metadata.slot_high_watermarks[&0].account_item_level, 418);
+        assert_eq!(metadata.source_lines["upgrade_currencies"], 8);
     }
 
     #[test]

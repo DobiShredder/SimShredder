@@ -26,6 +26,34 @@ pub struct RuleManifest {
     pub max_embellishments: u8,
     pub max_sockets_per_item: u8,
     pub allowed_enchant_slots: BTreeSet<GearSlot>,
+    #[serde(default)]
+    pub upgrade_tracks: BTreeMap<String, UpgradeTrackRule>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpgradeTrackRule {
+    pub ranks: Vec<UpgradeRankRule>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpgradeRankRule {
+    pub rank: u8,
+    pub item_level: u32,
+    pub cost_from_previous: CostVector,
+    #[serde(default)]
+    pub character_discount_cost: Option<CostVector>,
+    #[serde(default)]
+    pub account_discount_cost: Option<CostVector>,
+    #[serde(default)]
+    pub combined_discount_cost: Option<CostVector>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SlotHighWatermark {
+    pub character_item_level: u32,
+    pub account_item_level: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -45,6 +73,38 @@ pub enum ChangeKind {
     Enchant,
     Upgrade,
     Catalyst,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnhancementPolicy {
+    #[default]
+    MaxPotential,
+    BudgetConstrained,
+    CurrentState,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpgradeMetadataSource {
+    Profile,
+    Rule,
+    Manual,
+    #[default]
+    Unknown,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemUpgradeMetadata {
+    /// Stable identity of one physically owned item. Equal item IDs may still
+    /// have different keys when the character owns multiple copies.
+    pub owned_item_key: String,
+    pub current_rank: u8,
+    pub max_rank: Option<u8>,
+    #[serde(default)]
+    pub track: Option<String>,
+    pub source: UpgradeMetadataSource,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -75,6 +135,8 @@ pub struct ItemVariant {
     pub enchant_id: Option<u32>,
     pub simc_options: BTreeMap<String, String>,
     pub cost: CostVector,
+    #[serde(default)]
+    pub upgrade: ItemUpgradeMetadata,
     pub actions: Vec<UpgradeAction>,
     pub unique_groups: BTreeSet<String>,
     #[serde(default)]
@@ -136,6 +198,10 @@ pub struct SearchRequest {
     pub option_candidates: BTreeMap<String, Vec<ProfileOptionVariant>>,
     pub budget: BudgetSnapshot,
     #[serde(default)]
+    pub enhancement_policy: EnhancementPolicy,
+    #[serde(default)]
+    pub target_rank_overrides: BTreeMap<String, u8>,
+    #[serde(default)]
     pub minimum_set_pieces: BTreeMap<String, u8>,
     #[serde(default)]
     pub catalyst_charges: u8,
@@ -181,6 +247,7 @@ pub struct RejectionBreakdown {
     pub symmetric_duplicate: u64,
     pub minimum_set_bonus: u64,
     pub catalyst_limit: u64,
+    pub enhancement_policy: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -193,6 +260,7 @@ enum RejectionReason {
     Budget,
     MinimumSetBonus,
     CatalystLimit,
+    EnhancementPolicy,
 }
 
 impl RejectionBreakdown {
@@ -206,6 +274,7 @@ impl RejectionBreakdown {
             RejectionReason::Budget => &mut self.budget,
             RejectionReason::MinimumSetBonus => &mut self.minimum_set_bonus,
             RejectionReason::CatalystLimit => &mut self.catalyst_limit,
+            RejectionReason::EnhancementPolicy => &mut self.enhancement_policy,
         };
         *counter = counter.saturating_add(1);
     }
@@ -279,10 +348,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// still reports the complete search size.
 pub fn generate_loadouts(rules: &RuleManifest, request: &SearchRequest) -> Result<SearchPreview> {
     validate_request(rules, request)?;
-    let slots: Vec<_> = request.candidates.keys().copied().collect();
+    let (policy_candidates, policy_rejections) = policy_candidates(request)?;
+    let slots: Vec<_> = policy_candidates.keys().copied().collect();
     let gear_combinations = slots.iter().try_fold(1_u64, |total, slot| {
         total
-            .checked_mul(request.candidates[slot].len() as u64)
+            .checked_mul(policy_candidates[slot].len() as u64)
             .ok_or_else(|| Error::Invalid("combination count overflowed".into()))
     })?;
     let talent_count = request
@@ -313,8 +383,7 @@ pub fn generate_loadouts(rules: &RuleManifest, request: &SearchRequest) -> Resul
             "raw combination count {raw_combinations} exceeds the {MAX_RAW_COMBINATIONS} safety limit"
         )));
     }
-    let pruned_candidates: BTreeMap<_, _> = request
-        .candidates
+    let pruned_candidates: BTreeMap<_, _> = policy_candidates
         .iter()
         .map(|(slot, candidates)| {
             let mut candidates = prune_dominated_variants(candidates);
@@ -326,8 +395,7 @@ pub fn generate_loadouts(rules: &RuleManifest, request: &SearchRequest) -> Resul
             (*slot, candidates)
         })
         .collect();
-    let dominated_variants = request
-        .candidates
+    let dominated_variants = policy_candidates
         .values()
         .map(Vec::len)
         .sum::<usize>()
@@ -358,6 +426,7 @@ pub fn generate_loadouts(rules: &RuleManifest, request: &SearchRequest) -> Resul
     let mut seen_symmetric_loadouts = BTreeSet::new();
     let mut rejections = RejectionBreakdown {
         dominated_variants: dominated_variants as u64,
+        enhancement_policy: policy_rejections,
         ..RejectionBreakdown::default()
     };
     enumerate(
@@ -484,6 +553,18 @@ fn make_loadout(
     selected: &BTreeMap<GearSlot, ItemVariant>,
 ) -> Result<std::result::Result<Loadout, RejectionReason>> {
     let is_worn_baseline = selected.values().all(|item| !item.changed);
+    if !is_worn_baseline
+        && request.enhancement_policy == EnhancementPolicy::MaxPotential
+        && selected.values().any(|item| {
+            item.rank
+                != policy_target_rank(
+                    item,
+                    request.target_rank_overrides.get(&owned_item_key(item)),
+                )
+        })
+    {
+        return Ok(Err(RejectionReason::EnhancementPolicy));
+    }
     if symmetric_pair_reuses_owned_item(selected, GearSlot::Finger1, GearSlot::Finger2)
         || symmetric_pair_reuses_owned_item(selected, GearSlot::Trinket1, GearSlot::Trinket2)
     {
@@ -534,7 +615,10 @@ fn make_loadout(
     {
         return Ok(Err(RejectionReason::MinimumSetBonus));
     }
-    if !is_worn_baseline && !within_budget(&cost, &request.budget, &rules.currency_ids)? {
+    if !is_worn_baseline
+        && request.enhancement_policy == EnhancementPolicy::BudgetConstrained
+        && !within_budget(&cost, &request.budget, &rules.currency_ids)?
+    {
         return Ok(Err(RejectionReason::Budget));
     }
     let canonical = canonical_selection_key(selected);
@@ -555,6 +639,248 @@ fn make_loadout(
             })?,
         profile_options: BTreeMap::new(),
     }))
+}
+
+fn owned_item_key(item: &ItemVariant) -> String {
+    if item.upgrade.owned_item_key.is_empty() {
+        item.key.clone()
+    } else {
+        item.upgrade.owned_item_key.clone()
+    }
+}
+
+fn policy_target_rank(item: &ItemVariant, target_override: Option<&u8>) -> u8 {
+    target_override
+        .copied()
+        .or(item.upgrade.max_rank)
+        .unwrap_or(item.upgrade.current_rank)
+}
+
+/// Expands explicitly identified owned items from an exact-build upgrade rule.
+/// Items without a confirmed track/current rank or a complete rule are returned
+/// unchanged, so missing game data can never invent a rank or cost.
+pub fn materialize_upgrade_variants(
+    rules: &RuleManifest,
+    variants: &[ItemVariant],
+    high_watermarks: &BTreeMap<GearSlot, SlotHighWatermark>,
+) -> Result<Vec<ItemVariant>> {
+    for (track, rule) in &rules.upgrade_tracks {
+        if rule.ranks.is_empty()
+            || rule
+                .ranks
+                .windows(2)
+                .any(|pair| pair[1].rank != pair[0].rank.saturating_add(1))
+        {
+            return Err(Error::Invalid(format!(
+                "upgrade track {track} must contain consecutive ranks"
+            )));
+        }
+        for rank in &rule.ranks {
+            for cost in std::iter::once(&rank.cost_from_previous)
+                .chain(rank.character_discount_cost.iter())
+                .chain(rank.account_discount_cost.iter())
+                .chain(rank.combined_discount_cost.iter())
+            {
+                if cost
+                    .keys()
+                    .any(|currency| !rules.currency_ids.contains(currency))
+                {
+                    return Err(Error::Invalid(format!(
+                        "upgrade track {track} uses an unknown currency"
+                    )));
+                }
+            }
+        }
+    }
+
+    let mut available_ranks = BTreeMap::<String, BTreeSet<u8>>::new();
+    for variant in variants {
+        available_ranks
+            .entry(owned_item_key(variant))
+            .or_default()
+            .insert(variant.rank);
+    }
+    let mut expanded = variants.to_vec();
+    for base in variants {
+        let owned_key = owned_item_key(base);
+        if available_ranks
+            .get(&owned_key)
+            .is_some_and(|ranks| ranks.len() > 1)
+            || base.rank != base.upgrade.current_rank
+            || base.upgrade.source == UpgradeMetadataSource::Unknown
+        {
+            continue;
+        }
+        let Some(track_name) = base.upgrade.track.as_deref() else {
+            continue;
+        };
+        let Some(track) = rules.upgrade_tracks.get(track_name) else {
+            continue;
+        };
+        let Some(current_index) = track
+            .ranks
+            .iter()
+            .position(|rank| rank.rank == base.upgrade.current_rank)
+        else {
+            continue;
+        };
+        let maximum = track
+            .ranks
+            .last()
+            .expect("non-empty track was validated")
+            .rank;
+        let watermark = high_watermarks.get(&base.slot).copied().unwrap_or_default();
+        let mut previous = base.clone();
+        previous.upgrade.max_rank = Some(maximum);
+        previous.upgrade.source = UpgradeMetadataSource::Rule;
+        if let Some(existing) = expanded.iter_mut().find(|variant| variant.key == base.key) {
+            existing.upgrade = previous.upgrade.clone();
+        }
+        for rank_rule in track.ranks.iter().skip(current_index + 1) {
+            let character_discount = rank_rule.item_level <= watermark.character_item_level;
+            let account_discount = rank_rule.item_level <= watermark.account_item_level;
+            let edge_cost = if character_discount && account_discount {
+                rank_rule
+                    .combined_discount_cost
+                    .as_ref()
+                    .or(rank_rule.character_discount_cost.as_ref())
+                    .or(rank_rule.account_discount_cost.as_ref())
+            } else if character_discount {
+                rank_rule.character_discount_cost.as_ref()
+            } else if account_discount {
+                rank_rule.account_discount_cost.as_ref()
+            } else {
+                None
+            }
+            .unwrap_or(&rank_rule.cost_from_previous)
+            .clone();
+            let mut next = previous.clone();
+            next.key = format!("{}-rule-rank-{}", base.key, rank_rule.rank);
+            next.rank = rank_rule.rank;
+            next.changed = true;
+            next.simc_options
+                .insert("ilevel".into(), rank_rule.item_level.to_string());
+            add_cost(&mut next.cost, &edge_cost)?;
+            let action_id = format!("upgrade-{owned_key}-rank-{}", rank_rule.rank);
+            let dependency = next
+                .actions
+                .iter()
+                .rev()
+                .find(|action| action.kind == ChangeKind::Upgrade)
+                .map(|action| action.id.clone())
+                .into_iter()
+                .collect();
+            next.actions.push(UpgradeAction {
+                id: action_id,
+                label: format!("Upgrade to rank {}", rank_rule.rank),
+                kind: ChangeKind::Upgrade,
+                cost: edge_cost,
+                depends_on: dependency,
+                from_rank: Some(previous.rank),
+                to_rank: Some(rank_rule.rank),
+                slot: base.slot,
+                source_item_id: base.source_item_id,
+                simc_options_patch: BTreeMap::from([(
+                    "ilevel".into(),
+                    rank_rule.item_level.to_string(),
+                )]),
+            });
+            next.upgrade.max_rank = Some(maximum);
+            next.upgrade.source = UpgradeMetadataSource::Rule;
+            expanded.push(next.clone());
+            previous = next;
+        }
+    }
+    Ok(expanded)
+}
+
+fn policy_candidates(
+    request: &SearchRequest,
+) -> Result<(BTreeMap<GearSlot, Vec<ItemVariant>>, u64)> {
+    let mut groups = BTreeMap::<String, Vec<&ItemVariant>>::new();
+    for item in request.candidates.values().flatten() {
+        groups.entry(owned_item_key(item)).or_default().push(item);
+    }
+    let mut bounds = BTreeMap::<String, (u8, u8)>::new();
+    for (owned_key, variants) in groups {
+        let current = variants
+            .iter()
+            .map(|item| item.upgrade.current_rank)
+            .min()
+            .unwrap_or_default();
+        if variants
+            .iter()
+            .any(|item| item.upgrade.current_rank != current)
+        {
+            return Err(Error::Invalid(format!(
+                "owned item {owned_key} has inconsistent current ranks"
+            )));
+        }
+        let available = variants
+            .iter()
+            .map(|item| item.rank)
+            .collect::<BTreeSet<_>>();
+        let declared_max = variants
+            .iter()
+            .filter_map(|item| item.upgrade.max_rank)
+            .max();
+        let requested = request
+            .target_rank_overrides
+            .get(&owned_key)
+            .copied()
+            .or(declared_max)
+            .unwrap_or(current);
+        if requested < current {
+            return Err(Error::Invalid(format!(
+                "target rank override for {owned_key} is below its current rank"
+            )));
+        }
+        let target = match request.enhancement_policy {
+            EnhancementPolicy::CurrentState => current,
+            EnhancementPolicy::MaxPotential if available.contains(&requested) => requested,
+            EnhancementPolicy::BudgetConstrained
+                if (current..=requested).all(|rank| available.contains(&rank)) =>
+            {
+                requested
+            }
+            EnhancementPolicy::MaxPotential | EnhancementPolicy::BudgetConstrained => current,
+        };
+        bounds.insert(owned_key, (current, target));
+    }
+
+    let mut rejected = 0_u64;
+    let candidates = request
+        .candidates
+        .iter()
+        .map(|(slot, variants)| {
+            let filtered = variants
+                .iter()
+                .filter(|item| {
+                    let (current, target) = bounds[&owned_item_key(item)];
+                    let keep = match request.enhancement_policy {
+                        EnhancementPolicy::MaxPotential => !item.changed || item.rank == target,
+                        EnhancementPolicy::BudgetConstrained => {
+                            (current..=target).contains(&item.rank)
+                        }
+                        EnhancementPolicy::CurrentState => item.rank == current,
+                    };
+                    if !keep {
+                        rejected = rejected.saturating_add(1);
+                    }
+                    keep
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if filtered.is_empty() {
+                return Err(Error::Invalid(format!(
+                    "enhancement policy removed every candidate for {}",
+                    slot.simc_token()
+                )));
+            }
+            Ok((*slot, filtered))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    Ok((candidates, rejected))
 }
 
 fn symmetric_pair_reuses_owned_item(
@@ -615,7 +941,7 @@ fn validate_actions(item: &ItemVariant) -> Result<()> {
         ));
     }
     let mut action_cost = CostVector::new();
-    for action in &item.actions {
+    for (action_index, action) in item.actions.iter().enumerate() {
         if action.slot != item.slot || action.source_item_id != item.source_item_id {
             return Err(Error::Invalid(format!(
                 "action {} targets a different item",
@@ -623,11 +949,12 @@ fn validate_actions(item: &ItemVariant) -> Result<()> {
             )));
         }
         validate_simc_options(&action.simc_options_patch)?;
-        if action
-            .simc_options_patch
-            .iter()
-            .any(|(key, value)| item.simc_options.get(key) != Some(value))
-        {
+        if action.simc_options_patch.iter().any(|(key, value)| {
+            item.simc_options.get(key) != Some(value)
+                && !item.actions[action_index + 1..]
+                    .iter()
+                    .any(|later| later.simc_options_patch.get(key) == item.simc_options.get(key))
+        }) {
             return Err(Error::Invalid(format!(
                 "action {} does not match the final item options",
                 action.id
@@ -982,6 +1309,37 @@ pub fn build_profileset_stage_input(
     iterations: Option<u32>,
     profileset_work_threads: Option<u16>,
 ) -> Result<Vec<u8>> {
+    build_profileset_precision_input(
+        base_input,
+        loadouts,
+        iterations,
+        None,
+        profileset_work_threads,
+    )
+}
+
+pub fn build_profileset_target_error_input(
+    base_input: &[u8],
+    loadouts: &[Loadout],
+    target_error: f64,
+    profileset_work_threads: Option<u16>,
+) -> Result<Vec<u8>> {
+    build_profileset_precision_input(
+        base_input,
+        loadouts,
+        None,
+        Some(target_error),
+        profileset_work_threads,
+    )
+}
+
+fn build_profileset_precision_input(
+    base_input: &[u8],
+    loadouts: &[Loadout],
+    iterations: Option<u32>,
+    target_error: Option<f64>,
+    profileset_work_threads: Option<u16>,
+) -> Result<Vec<u8>> {
     if iterations == Some(0) || profileset_work_threads == Some(0) {
         return Err(Error::Invalid(
             "stage iterations and worker count must be positive".into(),
@@ -995,6 +1353,14 @@ pub fn build_profileset_stage_input(
     output.push_str("\n# SimShredder Top Gear stage options\n");
     if let Some(iterations) = iterations {
         writeln!(output, "iterations={iterations}").expect("String writes cannot fail");
+    }
+    if let Some(target_error) = target_error {
+        if !target_error.is_finite() || !(0.000_001..=0.1).contains(&target_error) {
+            return Err(Error::Invalid(
+                "stage target error must be between 0.000001 and 0.1".into(),
+            ));
+        }
+        writeln!(output, "target_error={target_error:.6}").expect("String writes cannot fail");
     }
     if let Some(workers) = profileset_work_threads {
         writeln!(output, "profileset_work_threads={workers}").expect("String writes cannot fail");
@@ -1154,6 +1520,50 @@ pub fn rank_results(
         entry.rank = index + 1;
     }
     Ok(ranked)
+}
+
+/// Keeps every candidate whose confidence interval can still overlap the best
+/// observed lower bound. The exact worn baseline is retained even when it is
+/// outside that interval so every precision stage has a stable reference.
+pub fn confidence_survivor_keys(
+    evaluations: &[EvaluatedLoadout],
+    baseline_key: &str,
+) -> Result<Vec<String>> {
+    if evaluations.is_empty() {
+        return Err(Error::Invalid(
+            "precision stage produced no evaluations".into(),
+        ));
+    }
+    if !evaluations
+        .iter()
+        .any(|entry| entry.loadout.key == baseline_key)
+    {
+        return Err(Error::Invalid(
+            "precision stage is missing the worn baseline".into(),
+        ));
+    }
+    if evaluations.iter().any(|entry| {
+        !entry.mean.is_finite()
+            || entry.mean < 0.0
+            || !entry.mean_error.is_finite()
+            || entry.mean_error < 0.0
+    }) {
+        return Err(Error::Invalid("candidate statistics are invalid".into()));
+    }
+    let best_lower_bound = evaluations
+        .iter()
+        .map(|entry| entry.mean - entry.mean_error)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let mut keys = evaluations
+        .iter()
+        .filter(|entry| {
+            entry.loadout.key == baseline_key || entry.mean + entry.mean_error >= best_lower_bound
+        })
+        .map(|entry| entry.loadout.key.clone())
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys.dedup();
+    Ok(keys)
 }
 
 fn dominates(left: &EvaluatedLoadout, right: &EvaluatedLoadout) -> bool {
@@ -1484,6 +1894,7 @@ mod tests {
                 GearSlot::Finger2,
                 GearSlot::MainHand,
             ]),
+            upgrade_tracks: BTreeMap::new(),
         }
     }
 
@@ -1509,6 +1920,13 @@ mod tests {
             enchant_id: None,
             simc_options: BTreeMap::new(),
             cost: BTreeMap::from([("crest".into(), cost)]),
+            upgrade: ItemUpgradeMetadata {
+                owned_item_key: key.into(),
+                current_rank: 1,
+                max_rank: Some(1),
+                track: None,
+                source: UpgradeMetadataSource::Manual,
+            },
             actions: Vec::new(),
             unique_groups: BTreeSet::new(),
             set_groups: BTreeSet::new(),
@@ -1543,6 +1961,8 @@ mod tests {
                 reserves: BTreeMap::from([("crest".into(), 2)]),
                 confirmed_at_unix_seconds: 1,
             },
+            enhancement_policy: EnhancementPolicy::BudgetConstrained,
+            target_rank_overrides: BTreeMap::new(),
             minimum_set_pieces: BTreeMap::new(),
             catalyst_charges: 0,
             max_combinations: 100,
@@ -1659,6 +2079,250 @@ mod tests {
             .count();
         assert_eq!(preview.valid_combinations as usize, oracle);
         assert_eq!(preview.rejections.budget, 3);
+    }
+
+    fn upgrade_variant(key: &str, rank: u8, cost: u32, changed: bool) -> ItemVariant {
+        let mut item = variant(key, GearSlot::Head, cost);
+        item.source_item_id = 42;
+        item.rank = rank;
+        item.changed = changed;
+        item.simc_options
+            .insert("ilevel".into(), (300 + u32::from(rank)).to_string());
+        item.upgrade = ItemUpgradeMetadata {
+            owned_item_key: "owned-head".into(),
+            current_rank: 1,
+            max_rank: Some(3),
+            track: None,
+            source: UpgradeMetadataSource::Manual,
+        };
+        item
+    }
+
+    #[test]
+    fn enhancement_policies_match_current_max_and_budget_oracles() {
+        let candidates = BTreeMap::from([(
+            GearSlot::Head,
+            vec![
+                upgrade_variant("worn", 1, 0, false),
+                upgrade_variant("rank-2", 2, 1, true),
+                upgrade_variant("rank-3", 3, 2, true),
+            ],
+        )]);
+
+        let mut current = request(candidates.clone());
+        current.enhancement_policy = EnhancementPolicy::CurrentState;
+        let preview = generate_loadouts(&rules(), &current).unwrap();
+        assert_eq!(preview.valid_combinations, 1);
+        assert_eq!(preview.loadouts[0].items[&GearSlot::Head].rank, 1);
+
+        let mut maximum = request(candidates.clone());
+        maximum.enhancement_policy = EnhancementPolicy::MaxPotential;
+        maximum.budget.balances.insert("crest".into(), 0);
+        let preview = generate_loadouts(&rules(), &maximum).unwrap();
+        assert_eq!(preview.valid_combinations, 2);
+        assert!(
+            preview
+                .loadouts
+                .iter()
+                .any(|loadout| loadout.items[&GearSlot::Head].rank == 3)
+        );
+
+        let mut budget = request(candidates);
+        budget.enhancement_policy = EnhancementPolicy::BudgetConstrained;
+        budget.budget.balances.insert("crest".into(), 1);
+        budget.budget.reserves.insert("crest".into(), 0);
+        let preview = generate_loadouts(&rules(), &budget).unwrap();
+        assert_eq!(preview.valid_combinations, 2);
+        assert!(
+            preview
+                .loadouts
+                .iter()
+                .any(|loadout| loadout.items[&GearSlot::Head].rank == 2)
+        );
+        assert_eq!(preview.rejections.budget, 1);
+    }
+
+    #[test]
+    fn item_override_and_incomplete_budget_path_fail_closed() {
+        let candidates = BTreeMap::from([(
+            GearSlot::Head,
+            vec![
+                upgrade_variant("worn", 1, 0, false),
+                upgrade_variant("rank-2", 2, 1, true),
+                upgrade_variant("rank-3", 3, 2, true),
+            ],
+        )]);
+        let mut maximum = request(candidates.clone());
+        maximum.enhancement_policy = EnhancementPolicy::MaxPotential;
+        maximum.target_rank_overrides.insert("owned-head".into(), 2);
+        let preview = generate_loadouts(&rules(), &maximum).unwrap();
+        assert!(
+            preview
+                .loadouts
+                .iter()
+                .any(|loadout| loadout.items[&GearSlot::Head].rank == 2)
+        );
+        assert!(
+            preview
+                .loadouts
+                .iter()
+                .all(|loadout| loadout.items[&GearSlot::Head].rank != 3)
+        );
+
+        let mut incomplete = request(BTreeMap::from([(
+            GearSlot::Head,
+            vec![
+                upgrade_variant("worn", 1, 0, false),
+                upgrade_variant("rank-3", 3, 2, true),
+            ],
+        )]));
+        incomplete.enhancement_policy = EnhancementPolicy::BudgetConstrained;
+        let preview = generate_loadouts(&rules(), &incomplete).unwrap();
+        assert_eq!(preview.valid_combinations, 1);
+        assert_eq!(preview.loadouts[0].items[&GearSlot::Head].rank, 1);
+    }
+
+    #[test]
+    fn exact_build_track_materializes_discounted_multi_currency_costs() {
+        let mut manifest = rules();
+        manifest.upgrade_tracks.insert(
+            "hero".into(),
+            UpgradeTrackRule {
+                ranks: vec![
+                    UpgradeRankRule {
+                        rank: 1,
+                        item_level: 300,
+                        cost_from_previous: BTreeMap::new(),
+                        character_discount_cost: None,
+                        account_discount_cost: None,
+                        combined_discount_cost: None,
+                    },
+                    UpgradeRankRule {
+                        rank: 2,
+                        item_level: 302,
+                        cost_from_previous: BTreeMap::from([
+                            ("crest".into(), 5),
+                            ("valor".into(), 2),
+                        ]),
+                        character_discount_cost: Some(BTreeMap::from([
+                            ("crest".into(), 2),
+                            ("valor".into(), 2),
+                        ])),
+                        account_discount_cost: Some(BTreeMap::from([
+                            ("crest".into(), 3),
+                            ("valor".into(), 1),
+                        ])),
+                        combined_discount_cost: None,
+                    },
+                    UpgradeRankRule {
+                        rank: 3,
+                        item_level: 305,
+                        cost_from_previous: BTreeMap::from([
+                            ("crest".into(), 5),
+                            ("valor".into(), 3),
+                        ]),
+                        character_discount_cost: None,
+                        account_discount_cost: Some(BTreeMap::from([
+                            ("crest".into(), 3),
+                            ("valor".into(), 1),
+                        ])),
+                        combined_discount_cost: None,
+                    },
+                ],
+            },
+        );
+        let mut base = upgrade_variant("worn-r1", 1, 0, false);
+        base.upgrade.track = Some("hero".into());
+        base.upgrade.max_rank = None;
+        base.upgrade.source = UpgradeMetadataSource::Profile;
+        let expanded = materialize_upgrade_variants(
+            &manifest,
+            &[base],
+            &BTreeMap::from([(
+                GearSlot::Head,
+                SlotHighWatermark {
+                    character_item_level: 302,
+                    account_item_level: 305,
+                },
+            )]),
+        )
+        .unwrap();
+        assert_eq!(
+            expanded.iter().map(|item| item.rank).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            expanded[2].cost,
+            BTreeMap::from([("crest".into(), 5), ("valor".into(), 3)])
+        );
+        assert_eq!(expanded[2].actions.len(), 2);
+        assert_eq!(expanded[2].upgrade.max_rank, Some(3));
+
+        let mut budget = request(BTreeMap::from([(GearSlot::Head, expanded)]));
+        budget.enhancement_policy = EnhancementPolicy::BudgetConstrained;
+        budget.budget.balances = BTreeMap::from([("crest".into(), 4), ("valor".into(), 10)]);
+        budget.budget.reserves = BTreeMap::from([("crest".into(), 0), ("valor".into(), 0)]);
+        let preview = generate_loadouts(&manifest, &budget).unwrap();
+        assert_eq!(preview.loadouts.len(), 2);
+        assert!(
+            preview
+                .loadouts
+                .iter()
+                .all(|loadout| { loadout.cost.get("crest").copied().unwrap_or_default() <= 4 })
+        );
+    }
+
+    #[test]
+    fn missing_upgrade_track_data_is_current_only_and_lossless() {
+        let mut base = upgrade_variant("worn-r1", 1, 0, false);
+        base.upgrade.track = Some("not-in-this-build".into());
+        base.upgrade.max_rank = None;
+        base.upgrade.source = UpgradeMetadataSource::Profile;
+        assert_eq!(
+            materialize_upgrade_variants(&rules(), std::slice::from_ref(&base), &BTreeMap::new())
+                .unwrap(),
+            vec![base]
+        );
+    }
+
+    #[test]
+    fn confidence_survivors_keep_baseline_and_uncertain_late_winner() {
+        let loadout = |key: &str| Loadout {
+            key: key.into(),
+            items: BTreeMap::new(),
+            cost: BTreeMap::new(),
+            changed_slots: usize::from(key != "baseline"),
+            changed_options: 0,
+            talent: talent(),
+            profile_options: BTreeMap::new(),
+        };
+        let keys = confidence_survivor_keys(
+            &[
+                EvaluatedLoadout {
+                    loadout: loadout("baseline"),
+                    mean: 90.0,
+                    mean_error: 1.0,
+                },
+                EvaluatedLoadout {
+                    loadout: loadout("early-winner"),
+                    mean: 105.0,
+                    mean_error: 1.0,
+                },
+                EvaluatedLoadout {
+                    loadout: loadout("late-winner"),
+                    mean: 101.0,
+                    mean_error: 6.0,
+                },
+                EvaluatedLoadout {
+                    loadout: loadout("loser"),
+                    mean: 80.0,
+                    mean_error: 2.0,
+                },
+            ],
+            "baseline",
+        )
+        .unwrap();
+        assert_eq!(keys, vec!["baseline", "early-winner", "late-winner"]);
     }
 
     #[test]

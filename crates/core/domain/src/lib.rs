@@ -185,8 +185,30 @@ pub struct Profile {
     pub saved_talent_loadouts: Vec<TalentLoadout>,
     pub equipped: BTreeMap<GearSlot, Item>,
     pub bag_items: Vec<BagItem>,
+    #[serde(default)]
+    pub upgrade_metadata: Option<UpgradeMetadata>,
     pub actions: Vec<ActionDirective>,
     pub simulation: SimulationOptions,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeMetadata {
+    /// Exact values from supported SimC AddOn comment directives. Unknown IDs
+    /// remain opaque until an exact-build rule catalog maps them.
+    pub raw_fields: BTreeMap<String, String>,
+    pub source_lines: BTreeMap<String, usize>,
+    pub currencies: BTreeMap<String, u32>,
+    pub achievements: Vec<u32>,
+    pub slot_high_watermarks: BTreeMap<u8, SlotHighWatermark>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlotHighWatermark {
+    pub slot_index: u8,
+    pub character_item_level: u32,
+    pub account_item_level: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -263,6 +285,16 @@ pub struct ResultAplAction {
     pub target: String,
     pub resources: BTreeMap<String, f64>,
     pub resource_max: BTreeMap<String, f64>,
+    #[serde(default)]
+    pub buffs: Vec<ResultAplBuff>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResultAplBuff {
+    pub id: Option<u32>,
+    pub name: String,
+    pub internal_name: String,
+    pub stacks: f64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

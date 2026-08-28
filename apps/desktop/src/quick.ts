@@ -157,6 +157,14 @@ export type ResultAplAction = {
   target: string;
   resources: Record<string, number>;
   resource_max: Record<string, number>;
+  buffs: ResultAplBuff[];
+};
+
+export type ResultAplBuff = {
+  id: number | null;
+  name: string;
+  internal_name: string;
+  stacks: number;
 };
 
 export type NormalizedQuickResult = {

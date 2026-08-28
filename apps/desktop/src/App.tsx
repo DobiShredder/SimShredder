@@ -139,7 +139,7 @@ export function App() {
       setRuntimeUpdateBusy(false);
     }
   };
-  const topGearJobIds = new Set(topGearSessionsState.flatMap((session) => [session.lowJobId, session.highJobId, session.actionJobId].filter((id): id is number => id !== null)));
+  const topGearJobIds = new Set(topGearSessionsState.flatMap((session) => [session.lowJobId, session.mediumJobId, session.highJobId, session.actionJobId].filter((id): id is number => id !== null)));
   const quickRuns = jobs.filter((job) => !topGearJobIds.has(job.id));
   const trackedSession = topGearSessionsState.find((session) => session.stage !== "complete");
   const trackedJob = quickRuns.find((candidate) => ["queued", "running"].includes(candidate.state));

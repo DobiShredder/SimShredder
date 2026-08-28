@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
@@ -26,6 +26,31 @@ use storage_paths::{StorageDefaults, StoragePathsRequest, StoragePathsView};
 #[derive(Default)]
 struct RunnerState {
     tokens: Mutex<HashMap<i64, CancellationToken>>,
+    top_gear_pipelines: Mutex<HashSet<String>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TopGearRecoveryAction {
+    None,
+    AttachCurrentJob,
+    AdvanceCompletedStage,
+}
+
+fn top_gear_recovery_action(
+    stage: &str,
+    job_state: &str,
+    pipeline_active: bool,
+    job_active: bool,
+) -> TopGearRecoveryAction {
+    if stage == "complete" || pipeline_active || job_active {
+        TopGearRecoveryAction::None
+    } else if matches!(job_state, "queued" | "running") {
+        TopGearRecoveryAction::AttachCurrentJob
+    } else if job_state == "succeeded" {
+        TopGearRecoveryAction::AdvanceCompletedStage
+    } else {
+        TopGearRecoveryAction::None
+    }
 }
 
 struct StorageState {
@@ -396,6 +421,58 @@ fn spawn_dispatch(
     Ok(())
 }
 
+fn spawn_top_gear_pipeline(
+    app: &tauri::AppHandle,
+    service: DesktopService,
+    session_id: String,
+    runtime: RuntimeDoctor,
+    job_id: i64,
+    token: CancellationToken,
+) -> Result<(), String> {
+    {
+        let runner = app.state::<RunnerState>();
+        let mut pipelines = runner
+            .top_gear_pipelines
+            .lock()
+            .map_err(|_| "runner state lock was poisoned".to_owned())?;
+        if !pipelines.insert(session_id.clone()) {
+            return Ok(());
+        }
+    }
+    app.state::<RunnerState>()
+        .tokens
+        .lock()
+        .map_err(|_| "runner state lock was poisoned".to_owned())?
+        .insert(job_id, token.clone());
+    let app = app.clone();
+    let pipeline_session_id = session_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut current_job_id = job_id;
+        let mut current_token = token;
+        loop {
+            let _ = service.run_next(current_token);
+            if let Ok(mut tokens) = app.state::<RunnerState>().tokens.lock() {
+                tokens.remove(&current_job_id);
+            }
+            let Ok(started) = service.advance_top_gear(&session_id, &runtime) else {
+                break;
+            };
+            let (Some(next_job_id), Some(next_token)) = (started.job_id, started.token) else {
+                break;
+            };
+            if let Ok(mut tokens) = app.state::<RunnerState>().tokens.lock() {
+                tokens.insert(next_job_id, next_token.clone());
+            }
+            current_job_id = next_job_id;
+            current_token = next_token;
+        }
+        if let Ok(mut pipelines) = app.state::<RunnerState>().top_gear_pipelines.lock() {
+            pipelines.remove(&pipeline_session_id);
+        }
+    });
+    Ok(())
+}
+
 fn simc_data_date(hotfix: Option<&str>) -> Option<String> {
     let date = hotfix?.split('/').next()?;
     let bytes = date.as_bytes();
@@ -736,21 +813,28 @@ async fn top_gear_start(
     request: TopGearRequest,
 ) -> Result<TopGearSessionView, String> {
     let worker_app = app.clone();
-    let started = tauri::async_runtime::spawn_blocking(move || {
+    let (service, runtime, started) = tauri::async_runtime::spawn_blocking(move || {
         let service = desktop_service(&worker_app)?;
         let runtime = manager(&worker_app)?
             .doctor_active()
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "SimulationCraft is not installed".to_owned())?;
-        service
+        let started = service
             .start_top_gear(&request, &runtime)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>((service, runtime, started))
     })
     .await
     .map_err(|error| format!("Top Gear enqueue task failed: {error}"))??;
-    let service = desktop_service(&app)?;
     if let (Some(job_id), Some(token)) = (started.job_id, started.token) {
-        spawn_dispatch(&app, service, job_id, token)?;
+        spawn_top_gear_pipeline(
+            &app,
+            service,
+            started.view.id.clone(),
+            runtime,
+            job_id,
+            token,
+        )?;
     }
     Ok(started.view)
 }
@@ -760,13 +844,47 @@ async fn top_gear_status(
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<TopGearSessionView, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        desktop_service(&app)?
-            .top_gear_status(&session_id)
-            .map_err(|error| error.to_string())
+    let worker_app = app.clone();
+    let recovery_session_id = session_id.clone();
+    let (service, view, recovery) = tauri::async_runtime::spawn_blocking(move || {
+        let service = desktop_service(&worker_app)?;
+        let view = service
+            .top_gear_status(&recovery_session_id)
+            .map_err(|error| error.to_string())?;
+        let active = worker_app
+            .state::<RunnerState>()
+            .top_gear_pipelines
+            .lock()
+            .map_err(|_| "runner state lock was poisoned".to_owned())?
+            .contains(&recovery_session_id);
+        let recovery =
+            if top_gear_recovery_action(&view.stage, &view.current_job.state, active, false)
+                == TopGearRecoveryAction::AdvanceCompletedStage
+            {
+                manager(&worker_app)?
+                    .doctor_active()
+                    .map_err(|error| error.to_string())?
+                    .map(|runtime| {
+                        service
+                            .advance_top_gear(&recovery_session_id, &runtime)
+                            .map(|started| (runtime, started))
+                            .map_err(|error| error.to_string())
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
+        Ok::<_, String>((service, view, recovery))
     })
     .await
-    .map_err(|error| format!("Top Gear status task failed: {error}"))?
+    .map_err(|error| format!("Top Gear status task failed: {error}"))??;
+    let Some((runtime, started)) = recovery else {
+        return Ok(view);
+    };
+    if let (Some(job_id), Some(token)) = (started.job_id, started.token) {
+        spawn_top_gear_pipeline(&app, service, session_id, runtime, job_id, token)?;
+    }
+    Ok(started.view)
 }
 
 #[tauri::command]
@@ -775,21 +893,28 @@ async fn top_gear_advance(
     session_id: String,
 ) -> Result<TopGearSessionView, String> {
     let worker_app = app.clone();
-    let started = tauri::async_runtime::spawn_blocking(move || {
+    let (service, runtime, started) = tauri::async_runtime::spawn_blocking(move || {
         let service = desktop_service(&worker_app)?;
         let runtime = manager(&worker_app)?
             .doctor_active()
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "SimulationCraft is not installed".to_owned())?;
-        service
+        let started = service
             .advance_top_gear(&session_id, &runtime)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>((service, runtime, started))
     })
     .await
     .map_err(|error| format!("Top Gear advance task failed: {error}"))??;
-    let service = desktop_service(&app)?;
     if let (Some(job_id), Some(token)) = (started.job_id, started.token) {
-        spawn_dispatch(&app, service, job_id, token)?;
+        spawn_top_gear_pipeline(
+            &app,
+            service,
+            started.view.id.clone(),
+            runtime,
+            job_id,
+            token,
+        )?;
     }
     Ok(started.view)
 }
@@ -833,9 +958,29 @@ async fn top_gear_retry(
     let view = service
         .top_gear_status(&session_id)
         .map_err(|error| error.to_string())?;
+    let runtime = manager(&app)?
+        .doctor_active()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "SimulationCraft is not installed".to_owned())?;
+    if view.pipeline_failure.is_some() && view.current_job.state == "succeeded" {
+        let started = service
+            .advance_top_gear(&session_id, &runtime)
+            .map_err(|error| error.to_string())?;
+        if let (Some(job_id), Some(token)) = (started.job_id, started.token) {
+            spawn_top_gear_pipeline(&app, service, session_id, runtime, job_id, token)?;
+        }
+        return Ok(started.view);
+    }
     let job_id = view.current_job.id;
     service.retry(job_id).map_err(|error| error.to_string())?;
-    spawn_dispatch(&app, service.clone(), job_id, CancellationToken::default())?;
+    spawn_top_gear_pipeline(
+        &app,
+        service.clone(),
+        session_id.clone(),
+        runtime,
+        job_id,
+        CancellationToken::default(),
+    )?;
     service
         .top_gear_status(&session_id)
         .map_err(|error| error.to_string())
@@ -869,13 +1014,76 @@ async fn top_gear_export(app: tauri::AppHandle, session_id: String) -> Result<Ex
 
 #[tauri::command]
 async fn top_gear_sessions(app: tauri::AppHandle) -> Result<Vec<TopGearSessionView>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        desktop_service(&app)?
+    let worker_app = app.clone();
+    let (service, runtime, sessions) = tauri::async_runtime::spawn_blocking(move || {
+        let service = desktop_service(&worker_app)?;
+        let runtime = manager(&worker_app)?
+            .doctor_active()
+            .map_err(|error| error.to_string())?;
+        let sessions = service
             .top_gear_sessions()
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>((service, runtime, sessions))
     })
     .await
-    .map_err(|error| format!("Top Gear session recovery failed: {error}"))?
+    .map_err(|error| format!("Top Gear session recovery failed: {error}"))??;
+    let Some(runtime) = runtime else {
+        return Ok(sessions);
+    };
+    let mut recovered = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        let pipeline_active = app
+            .state::<RunnerState>()
+            .top_gear_pipelines
+            .lock()
+            .map_err(|_| "runner state lock was poisoned".to_owned())?
+            .contains(&session.id);
+        let job_active = app
+            .state::<RunnerState>()
+            .tokens
+            .lock()
+            .map_err(|_| "runner state lock was poisoned".to_owned())?
+            .contains_key(&session.current_job.id);
+        match top_gear_recovery_action(
+            &session.stage,
+            &session.current_job.state,
+            pipeline_active,
+            job_active,
+        ) {
+            TopGearRecoveryAction::None => {
+                recovered.push(session);
+                continue;
+            }
+            TopGearRecoveryAction::AttachCurrentJob => {
+                spawn_top_gear_pipeline(
+                    &app,
+                    service.clone(),
+                    session.id.clone(),
+                    runtime.clone(),
+                    session.current_job.id,
+                    CancellationToken::default(),
+                )?;
+                recovered.push(session);
+                continue;
+            }
+            TopGearRecoveryAction::AdvanceCompletedStage => {}
+        }
+        let started = service
+            .advance_top_gear(&session.id, &runtime)
+            .map_err(|error| error.to_string())?;
+        if let (Some(job_id), Some(token)) = (started.job_id, started.token) {
+            spawn_top_gear_pipeline(
+                &app,
+                service.clone(),
+                started.view.id.clone(),
+                runtime.clone(),
+                job_id,
+                token,
+            )?;
+        }
+        recovered.push(started.view);
+    }
+    Ok(recovered)
 }
 
 #[tauri::command]
@@ -1033,6 +1241,34 @@ mod tests {
         );
         assert_eq!(simc_data_date(None), None);
         assert_eq!(simc_data_date(Some("August 25/69497")), None);
+    }
+
+    #[test]
+    fn top_gear_crash_recovery_resumes_without_duplicate_dispatch() {
+        assert_eq!(
+            top_gear_recovery_action("medium_precision", "queued", false, false),
+            TopGearRecoveryAction::AttachCurrentJob
+        );
+        assert_eq!(
+            top_gear_recovery_action("medium_precision", "succeeded", false, false),
+            TopGearRecoveryAction::AdvanceCompletedStage
+        );
+        assert_eq!(
+            top_gear_recovery_action("high_precision", "running", true, false),
+            TopGearRecoveryAction::None
+        );
+        assert_eq!(
+            top_gear_recovery_action("low_precision", "queued", false, true),
+            TopGearRecoveryAction::None
+        );
+        assert_eq!(
+            top_gear_recovery_action("complete", "succeeded", false, false),
+            TopGearRecoveryAction::None
+        );
+        assert_eq!(
+            top_gear_recovery_action("low_precision", "failed", false, false),
+            TopGearRecoveryAction::None
+        );
     }
 
     #[cfg(unix)]

@@ -79,6 +79,14 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
     }
     return candidateSlotOrder.flatMap((slot) => groups.has(slot) ? [[slot, groups.get(slot)!] as const] : []);
   }, [request?.variants]);
+  const ownedItems = useMemo(() => {
+    const items = new Map<string, ItemVariant>();
+    for (const variant of request?.variants ?? []) {
+      const key = variant.upgrade?.ownedItemKey ?? variant.key;
+      if (!items.has(key) || variant.rank < (items.get(key)?.rank ?? Number.MAX_SAFE_INTEGER)) items.set(key, variant);
+    }
+    return [...items.entries()];
+  }, [request?.variants]);
 
   const itemTooltip = (variant: ItemVariant) => itemTooltipModel({
     id: variant.sourceItemId,
@@ -89,7 +97,7 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
     enchantId: variant.enchantId,
     changed: variant.changed,
   }, {
-    title: t("tooltip.itemTitle", { id: variant.sourceItemId }),
+    title: variant.displayName ?? t("tooltip.itemTitle", { id: variant.sourceItemId }),
     category: t("tooltip.itemCategory", { slot: t(`topGear.slot_${candidateSlot(variant.slot)}`) }),
     itemLevel: t("tooltip.itemLevel"),
     rank: t("tooltip.rank"),
@@ -114,9 +122,10 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
         setPreview(next);
         setRequest((current) => current ? {
           ...current,
-          variants: next.variants.map((variant) => ({ ...variant, enabled: variant.enabled ?? true, displayName: variant.displayName ?? null, setGroups: variant.setGroups ?? [], catalyst: variant.catalyst ?? false })),
+          variants: next.variants.map((variant) => ({ ...variant, enabled: variant.enabled ?? true, displayName: variant.displayName ?? null, setGroups: variant.setGroups ?? [], catalyst: variant.catalyst ?? false, upgrade: variant.upgrade ?? { ownedItemKey: variant.key, currentRank: variant.rank, maxRank: null, source: "unknown" } })),
           talentLoadouts: next.talentLoadouts ?? current.talentLoadouts,
           profileOptions: next.profileOptions ?? current.profileOptions,
+          upgradeMetadata: next.upgradeMetadata ?? current.upgradeMetadata,
         } : current);
         const base = next.variants[0];
         setDraft((current) => ({ ...current, baseKey: base?.key ?? "", rank: base?.rank ?? 0, gemIds: base?.gemIds.join("/") ?? "", enchantId: base?.enchantId ? String(base.enchantId) : "" }));
@@ -129,12 +138,19 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
     return <div className="page placeholder-page"><p className="eyebrow">{t("topGear.eyebrow")}</p><h1>{t("topGear.title")}</h1><p className="placeholder-description">{t("topGear.importFirst")}</p><button className="primary-button" type="button" onClick={onImport}>{t("quick.goImport")}</button></div>;
   }
 
-  const updateNumber = (field: "combinationLimit" | "lowIterations" | "highIterations" | "finalistCount", value: number) =>
+  const updateNumber = (field: "combinationLimit", value: number) =>
     setRequest({ ...request, [field]: value });
   const updateCurrency = (kind: "balances" | "reserves", currency: string, value: number) =>
     setRequest({ ...request, [kind]: { ...request[kind], [currency]: Math.max(0, value) }, currencyConfirmedAtUnixSeconds: Math.floor(Date.now() / 1000) });
   const updateCandidate = (key: string, enabled: boolean) => {
     setRequest({ ...request, variants: request.variants.map((variant) => variant.key === key ? { ...variant, enabled } : variant) });
+    setPreview(null);
+  };
+  const updateTargetRank = (ownedItemKey: string, value: string) => {
+    const targetRankOverrides = { ...request.targetRankOverrides };
+    if (value === "") delete targetRankOverrides[ownedItemKey];
+    else targetRankOverrides[ownedItemKey] = Math.max(0, Number(value));
+    setRequest({ ...request, targetRankOverrides });
     setPreview(null);
   };
   const toggleSlotLock = (slot: CandidateSlot) => {
@@ -176,7 +192,7 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
     const candidate: ItemVariant = {
       key: `manual-${itemSlot}-${sourceItemId}-${stamp}`, sourceItemId, slot: itemSlot,
       displayName: itemName.trim() || null, rank: 0, gemIds: [], enchantId: null,
-      simcOptions, cost: {}, actions: [{ id: `equip-${stamp}`, label: t("topGear.equipAction"), kind: "equip", cost: {}, dependsOn: [], fromRank: null, toRank: null, slot: itemSlot, sourceItemId, simcOptionsPatch: simcOptions }],
+      simcOptions, cost: {}, upgrade: { ownedItemKey: `manual-${sourceItemId}-${stamp}`, currentRank: 0, maxRank: null, source: "manual" }, actions: [{ id: `equip-${stamp}`, label: t("topGear.equipAction"), kind: "equip", cost: {}, dependsOn: [], fromRank: null, toRank: null, slot: itemSlot, sourceItemId, simcOptionsPatch: simcOptions }],
       uniqueGroups: [], setGroups: [], weaponKind: "none", embellishment: false, catalyst: false, enabled: true, changed: true,
     };
     setRequest({ ...request, variants: [...request.variants, candidate] });
@@ -244,6 +260,7 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
       enchantId,
       simcOptions,
       cost,
+      upgrade: { ...(base.upgrade ?? { ownedItemKey: base.key, currentRank: base.rank, maxRank: null, source: "unknown" }), maxRank: Math.max(draft.rank, base.upgrade?.maxRank ?? base.rank), source: "manual" },
       actions,
       uniqueGroups: draft.uniqueGroup ? [draft.uniqueGroup] : [],
       setGroups: draft.setGroup ? [draft.setGroup] : [],
@@ -253,7 +270,9 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
       enabled: true,
       changed: true,
     };
-    setRequest({ ...request, variants: [...request.variants, variant] });
+    const ownedItemKey = variant.upgrade?.ownedItemKey ?? variant.key;
+    const variants = request.variants.map((candidate) => (candidate.upgrade?.ownedItemKey ?? candidate.key) === ownedItemKey ? { ...candidate, upgrade: { ...(candidate.upgrade ?? { ownedItemKey, currentRank: candidate.rank, maxRank: null, source: "unknown" }), maxRank: variant.upgrade?.maxRank ?? null, source: "manual" as const } } : candidate);
+    setRequest({ ...request, variants: [...variants, variant] });
     setPreview(null);
     setDraft({ ...emptyVariant, baseKey: base.key });
   };
@@ -273,7 +292,7 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
           const locked = memberSlots(slot).every((member) => request.lockedSlots.includes(member));
           return <article className="slot-candidate-card" key={slot}>
             <header><strong>{t(`topGear.slot_${slot}`)}</strong><button aria-label={t(locked ? "topGear.unlockSlot" : "topGear.lockSlot", { slot: t(`topGear.slot_${slot}`) })} className="icon-button" type="button" onClick={() => toggleSlotLock(slot)}>{locked ? <Lock aria-hidden="true" size={15} /> : <Unlock aria-hidden="true" size={15} />}</button></header>
-            <ul>{variants.map((variant) => <li key={variant.key}><label className="candidate-check"><input checked={!variant.changed || (variant.enabled && !locked)} disabled={!variant.changed || locked} type="checkbox" onChange={(event) => updateCandidate(variant.key, event.target.checked)} /><span><strong>{variant.displayName ?? t("tooltip.itemTitle", { id: variant.sourceItemId })}</strong><small>{variant.changed ? t("topGear.candidate") : t("topGear.worn")} · {variant.simcOptions.ilevel ? t("topGear.itemLevelValue", { level: variant.simcOptions.ilevel }) : `ID ${variant.sourceItemId}`}</small></span></label></li>)}</ul>
+            <ul>{variants.map((variant) => <li className="candidate-item-row" key={variant.key}><EntityTooltip model={itemTooltip(variant)} /><label className="candidate-check"><input checked={!variant.changed || (variant.enabled && !locked)} disabled={!variant.changed || locked} type="checkbox" onChange={(event) => updateCandidate(variant.key, event.target.checked)} /><span><strong>{variant.displayName ?? t("tooltip.itemTitle", { id: variant.sourceItemId })}</strong><small>{variant.changed ? t("topGear.candidate") : t("topGear.worn")} · {variant.simcOptions.ilevel ? t("topGear.itemLevelValue", { level: variant.simcOptions.ilevel }) : `ID ${variant.sourceItemId}`}</small></span></label></li>)}</ul>
           </article>;
         })}</div>
         <details className="inline-disclosure"><summary>{t("topGear.addExactItem")}</summary><div className="exact-item-form"><label>{t("topGear.itemSlot")}<select value={itemSlot} onChange={(event) => setItemSlot(event.target.value as GearSlot)}>{slotOrder.filter((slot) => !["shirt", "tabard", "finger2", "trinket2"].includes(slot)).map((slot) => <option key={slot} value={slot}>{t(`topGear.slot_${candidateSlot(slot)}`)}</option>)}</select></label><label>{t("topGear.itemId")}<input inputMode="numeric" value={itemId} onChange={(event) => setItemId(event.target.value)} /></label><label>{t("topGear.itemNameOptional")}<input value={itemName} onChange={(event) => setItemName(event.target.value)} /></label><label>{t("topGear.itemOptions")}<input placeholder="bonus_id=… , context=…" value={itemOptions} onChange={(event) => setItemOptions(event.target.value)} /></label><button className="secondary-button" disabled={!itemId} type="button" onClick={addExactItem}>{t("topGear.addItemCandidate")}</button></div><small>{t("topGear.itemSearchBoundary")}</small></details>
@@ -301,8 +320,16 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
         <div className="inline-fields profile-option-add"><label>{t("topGear.optionType")}<select value={optionKind} onChange={(event) => setOptionKind(event.target.value)}>{Object.keys(request.profileOptions).map((axis) => <option key={axis} value={axis}>{t(`topGear.option_${axis}`)}</option>)}</select></label><label>{t("topGear.simcValue")}<input placeholder={t("topGear.simcValuePlaceholder")} value={optionValue} onChange={(event) => setOptionValue(event.target.value)} /></label><button className="secondary-button" disabled={!optionValue.trim()} type="button" onClick={addProfileOption}>{t("topGear.addOption")}</button></div>
       </section>
 
+      <section className="settings-form" aria-labelledby="enhancement-policy-heading">
+        <h2 id="enhancement-policy-heading"><Hammer aria-hidden="true" size={18} />{t("topGear.enhancementPolicy")}</h2>
+        <label>{t("topGear.enhancementPolicyLabel")}<select value={request.enhancementPolicy} onChange={(event) => { setRequest({ ...request, enhancementPolicy: event.target.value as TopGearRequest["enhancementPolicy"] }); setPreview(null); }}><option value="max_potential">{t("topGear.policy_max_potential")}</option><option value="budget_constrained">{t("topGear.policy_budget_constrained")}</option><option value="current_state">{t("topGear.policy_current_state")}</option></select></label>
+        <p className="safe-note">{t(`topGear.policy_${request.enhancementPolicy}_help`)}</p>
+        {request.enhancementPolicy !== "current_state" ? <details className="inline-disclosure"><summary>{t("topGear.itemUpgradeTargets")}</summary><div className="currency-list">{ownedItems.map(([ownedItemKey, variant]) => <div className="currency-row upgrade-target-row" key={ownedItemKey}><div className="upgrade-item-identity"><EntityTooltip model={itemTooltip(variant)} /><strong>{variant.displayName ?? t("tooltip.itemTitle", { id: variant.sourceItemId })}</strong></div><span>{t("topGear.currentRankValue", { rank: variant.upgrade?.currentRank ?? variant.rank })}</span><label>{t("topGear.targetRank")}<input min={variant.upgrade?.currentRank ?? variant.rank} type="number" placeholder={variant.upgrade?.maxRank == null ? t("topGear.unconfirmed") : String(variant.upgrade.maxRank)} value={request.targetRankOverrides[ownedItemKey] ?? ""} onChange={(event) => updateTargetRank(ownedItemKey, event.target.value)} /></label><small>{t(`topGear.metadataSource_${variant.upgrade?.source ?? "unknown"}`)}</small></div>)}</div></details> : null}
+        {request.upgradeMetadata ? <details className="inline-disclosure"><summary>{t("topGear.importedUpgradeMetadata")}</summary><pre>{Object.entries(request.upgradeMetadata.rawFields).map(([key, value]) => `${key}=${value}`).join("\n")}</pre><label className="checkbox-line"><input checked={request.upgradeMetadataConfirmed} type="checkbox" onChange={(event) => { setRequest({ ...request, upgradeMetadataConfirmed: event.target.checked }); setPreview(null); }} /><span><strong>{t("topGear.confirmUpgradeMetadata")}</strong><small>{t("topGear.confirmUpgradeMetadataHelp")}</small></span></label></details> : null}
+      </section>
+
       <div className="top-gear-grid">
-        <section className="settings-form" aria-labelledby="budget-heading">
+        {request.enhancementPolicy === "budget_constrained" ? <section className="settings-form" aria-labelledby="budget-heading">
           <h2 id="budget-heading"><ShieldCheck aria-hidden="true" size={18} />{t("topGear.budget")}</h2>
           {(["champion_mistcrest", "hero_mistcrest", "myth_mistcrest", "spark_of_tides"] as const).map((currency) => <div className="currency-row" key={currency}>
             <strong>{t(`topGear.${currency}`)}</strong>
@@ -310,14 +337,12 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
             <label>{t("topGear.reserve")}<input min={0} type="number" value={request.reserves[currency] ?? 0} onChange={(event) => updateCurrency("reserves", currency, Number(event.target.value))} /></label>
           </div>)}
           <p className="safe-note">{t("topGear.currencyNote")}</p>
-        </section>
+        </section> : null}
 
         <section className="settings-form" aria-labelledby="precision-heading">
           <h2 id="precision-heading"><Sparkles aria-hidden="true" size={18} />{t("topGear.precision")}</h2>
           <label>{t("topGear.limit")}<input min={1} max={2048} type="number" value={request.combinationLimit} onChange={(event) => updateNumber("combinationLimit", Number(event.target.value))} /></label>
-          <label>{t("topGear.lowIterations")}<input min={100} type="number" value={request.lowIterations} onChange={(event) => updateNumber("lowIterations", Number(event.target.value))} /></label>
-          <label>{t("topGear.highIterations")}<input min={100} type="number" value={request.highIterations} onChange={(event) => updateNumber("highIterations", Number(event.target.value))} /></label>
-          <label>{t("topGear.finalists")}<input min={1} max={256} type="number" value={request.finalistCount} onChange={(event) => updateNumber("finalistCount", Number(event.target.value))} /></label>
+          <p className="safe-note">{t("topGear.automaticPrecision", { low: request.lowTargetError * 100, medium: request.mediumTargetError * 100, high: request.highTargetError * 100 })}</p>
         </section>
       </div>
 

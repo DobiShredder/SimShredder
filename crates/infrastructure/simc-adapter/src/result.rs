@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 use simshredder_domain::{
-    NormalizedQuickResult, ResultAction, ResultAplAction, ResultBuff, ResultOptions, ResultPlayer,
-    ResultResource, ResultRuntimeIdentity, StatisticalMetric,
+    NormalizedQuickResult, ResultAction, ResultAplAction, ResultAplBuff, ResultBuff, ResultOptions,
+    ResultPlayer, ResultResource, ResultRuntimeIdentity, StatisticalMetric,
 };
 
 use crate::{Error, Result, SimcIdentity};
@@ -13,6 +13,7 @@ const SUPPORTED_REPORT_VERSION: &str = "2.0.0";
 const MAX_ACTIONS: usize = 256;
 const MAX_BUFFS: usize = 256;
 const MAX_APL_ACTIONS: usize = 100;
+const MAX_APL_BUFFS_PER_ACTION: usize = 64;
 
 pub fn normalize_quick_result(
     bytes: &[u8],
@@ -241,6 +242,26 @@ fn normalize_apl_sequence(player: &Value) -> Result<Vec<ResultAplAction>> {
         if time_seconds < 0.0 {
             return contract("action sequence time is outside its supported range");
         }
+        let buffs = optional_array(entry, "/buffs")?
+            .into_iter()
+            .flatten()
+            .take(MAX_APL_BUFFS_PER_ACTION)
+            .map(|buff| {
+                let internal_name = required_bounded_string(buff, "/name")?;
+                let stacks = number(buff, "/stacks")?;
+                if stacks < 0.0 {
+                    return contract(
+                        "action sequence buff stacks are outside their supported range",
+                    );
+                }
+                Ok(ResultAplBuff {
+                    id: optional_positive_u32(buff.pointer("/id"), "/action_sequence/buffs/id")?,
+                    name: display_internal_name(&internal_name),
+                    internal_name,
+                    stacks,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         actions.push(ResultAplAction {
             time_seconds,
             id: optional_positive_u32(entry.pointer("/id"), "/action_sequence/id")?,
@@ -253,6 +274,7 @@ fn normalize_apl_sequence(player: &Value) -> Result<Vec<ResultAplAction>> {
             target: required_bounded_string(entry, "/target")?,
             resources: finite_number_map(entry, "/resources")?,
             resource_max: finite_number_map(entry, "/resources_max")?,
+            buffs,
         });
         if actions.len() == MAX_APL_ACTIONS {
             break;
@@ -472,6 +494,10 @@ mod tests {
                 "/sim/players/0/collected_data/action_sequence/0/time",
                 serde_json::json!(-0.1),
             ),
+            (
+                "/sim/players/0/collected_data/action_sequence/0/buffs/0/stacks",
+                serde_json::json!(-1),
+            ),
         ];
         for (pointer, replacement) in mutations {
             let mut document: Value = serde_json::from_str(fixture).unwrap();
@@ -501,6 +527,17 @@ mod tests {
             .pointer("/sim/players/0/collected_data/action_sequence/0")
             .unwrap()
             .clone();
+        let buff = apl.pointer("/buffs/0").unwrap().clone();
+        document["sim"]["players"][0]["collected_data"]["action_sequence"][0]["buffs"] =
+            Value::Array(
+                (0..(MAX_APL_BUFFS_PER_ACTION + 10))
+                    .map(|_| buff.clone())
+                    .collect(),
+            );
+        let apl = document
+            .pointer("/sim/players/0/collected_data/action_sequence/0")
+            .unwrap()
+            .clone();
         document["sim"]["players"][0]["collected_data"]["action_sequence"] =
             Value::Array((0..(MAX_APL_ACTIONS + 10)).map(|_| apl.clone()).collect());
 
@@ -512,6 +549,7 @@ mod tests {
         .unwrap();
         assert_eq!(result.actions.len(), MAX_ACTIONS);
         assert_eq!(result.apl_sequence.len(), MAX_APL_ACTIONS);
+        assert_eq!(result.apl_sequence[0].buffs.len(), MAX_APL_BUFFS_PER_ACTION);
     }
 
     #[test]

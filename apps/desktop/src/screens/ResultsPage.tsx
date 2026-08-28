@@ -79,7 +79,7 @@ function QuickResultPanel({ result, picker }: { result: QuickResultView | null; 
   const normalized = result.result;
   const number = (value: number) => value.toLocaleString(i18n.language, { maximumFractionDigits: 2 });
   const percent = (value: number) => `${number(value)}%`;
-  const entityModel = (kind: TooltipKind, id: number, name: string, internalName: string, details: TooltipModel["details"]): TooltipModel => ({
+  const entityModel = (kind: TooltipKind, id: number | null, name: string, internalName: string, details: TooltipModel["details"]): TooltipModel => ({
     kind, id, title: name, category: t(`tooltip.categories.${kind}`), details: [
       { label: t("resultsPage.internalName"), value: internalName },
       ...details,
@@ -96,6 +96,20 @@ function QuickResultPanel({ result, picker }: { result: QuickResultView | null; 
     if (!entries.length) return t("resultsPage.none");
     return entries.map(([name, value]) => `${name}: ${number(value)}${maxima[name] === undefined ? "" : ` / ${number(maxima[name])}`}`).join(" · ");
   };
+  const actionBuffs = (action: typeof normalized.apl_sequence[number]) => (
+    action.buffs.length ? <div className="action-buff-list">{action.buffs.map((buff, index) => {
+      const summary = normalized.buffs.find((candidate) =>
+        (buff.id !== null && candidate.id === buff.id)
+        || candidate.internal_name === buff.internal_name,
+      );
+      const title = summary?.name ?? buff.name;
+      return <span className="action-buff" key={`${buff.internal_name}-${buff.id ?? "none"}-${index}`}>
+        <EntityTooltip model={entityModel("buff", buff.id, title, buff.internal_name, [{ label: t("resultsPage.stacks"), value: number(buff.stacks) }])} />
+        <span className="action-buff-name">{title}</span>
+        {buff.stacks > 1 ? <span className="action-buff-stacks" aria-label={t("resultsPage.stackCount", { count: number(buff.stacks) })}>{number(buff.stacks)}</span> : null}
+      </span>;
+    })}</div> : <span className="muted">{t("resultsPage.none")}</span>
+  );
   return (
     <div className="page results-page">
       <p className="eyebrow">{t("resultsPage.eyebrow")}</p>
@@ -125,7 +139,7 @@ function QuickResultPanel({ result, picker }: { result: QuickResultView | null; 
       <section className="result-detail-section">
         <h2>{t("resultsPage.aplSequence")}</h2>
         <p className="muted">{t("resultsPage.aplHelp")}</p>
-        {normalized.apl_sequence.length ? <div className="table-scroll"><table><thead><tr><th scope="col">{t("resultsPage.time")}</th><th scope="col">{t("resultsPage.action")}</th><th scope="col">{t("resultsPage.target")}</th><th scope="col">{t("resultsPage.resourceState")}</th></tr></thead><tbody>{normalized.apl_sequence.map((action, index) => <tr key={`${action.time_seconds}-${action.internal_name}-${index}`}><td>{number(action.time_seconds)}s</td><th scope="row">{entityName("spell", action.id, action.name, action.internal_name, [])}</th><td>{action.target}</td><td>{resourceSnapshot(action.resources, action.resource_max)}</td></tr>)}</tbody></table></div> : <p className="muted">{t("resultsPage.noApl")}</p>}
+        {normalized.apl_sequence.length ? <div className="table-scroll"><table className="action-sequence-table"><thead><tr><th scope="col">{t("resultsPage.time")}</th><th scope="col">{t("resultsPage.action")}</th><th scope="col">{t("resultsPage.target")}</th><th scope="col">{t("resultsPage.resourceState")}</th><th scope="col">{t("resultsPage.activeBuffs")}</th></tr></thead><tbody>{normalized.apl_sequence.map((action, index) => <tr key={`${action.time_seconds}-${action.internal_name}-${index}`}><td>{number(action.time_seconds)}s</td><th scope="row">{entityName("spell", action.id, action.name, action.internal_name, [])}</th><td>{action.target}</td><td>{resourceSnapshot(action.resources, action.resource_max)}</td><td>{actionBuffs(action)}</td></tr>)}</tbody></table></div> : <p className="muted">{t("resultsPage.noApl")}</p>}
       </section>
       <section className="identity-card"><h2>{t("resultsPage.runtime")}</h2><p>{t("resultsPage.simc", { version: normalized.runtime.simc_version, revision: normalized.runtime.git_revision })}</p><p>{t("resultsPage.game", { version: normalized.runtime.game_version, build: normalized.runtime.game_build })}</p><p>{t("resultsPage.iterations", { count: normalized.options.iterations.toLocaleString(i18n.language), threads: normalized.options.threads })}</p></section>
       <section className="artifact-section">

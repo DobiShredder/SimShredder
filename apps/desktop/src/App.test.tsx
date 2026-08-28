@@ -105,7 +105,7 @@ const topGearPrepared = {
   executionCount: 4,
   finalistCount: 2,
   estimated: false,
-  rejections: { dominatedVariants: 0, socketLimit: 0, enchantSlot: 0, uniqueEquipped: 0, embellishmentLimit: 0, weaponConstraint: 0, budget: 0, symmetricDuplicate: 0, minimumSetBonus: 0, catalystLimit: 0 },
+  rejections: { dominatedVariants: 0, socketLimit: 0, enchantSlot: 0, uniqueEquipped: 0, embellishmentLimit: 0, weaponConstraint: 0, budget: 0, symmetricDuplicate: 0, minimumSetBonus: 0, catalystLimit: 0, enhancementPolicy: 0 },
   generatedInput: "warrior=Core\nprofileset.0123abcd=default_actions=1\n",
   variants: [
     { key: "worn-head-154029", sourceItemId: 154029, slot: "head", displayName: "Worn Helm", rank: 0, gemIds: [], enchantId: null, simcOptions: {}, cost: {}, actions: [], uniqueGroups: [], setGroups: [], weaponKind: "none", embellishment: false, catalyst: false, enabled: true, changed: false },
@@ -125,16 +125,18 @@ const topGearPrepared = {
   loadouts: [],
 } as const;
 
-const topGearSession = (stage: "low_precision" | "high_precision" | "complete"): TopGearSessionView => ({
+const topGearSession = (stage: "low_precision" | "medium_precision" | "high_precision" | "complete"): TopGearSessionView => ({
   id: "tg-test",
   stage,
   currentJob: succeededJob,
   lowJobId: 7,
-  highJobId: stage === "low_precision" ? null : 9,
+  mediumJobId: stage === "low_precision" ? null : 8,
+  highJobId: stage === "high_precision" || stage === "complete" ? 9 : null,
   actionJobId: null,
   completedExecutions: stage === "low_precision" ? 2 : 4,
   totalExecutions: 4,
-  canAdvance: stage !== "complete",
+  canAdvance: false,
+  pipelineFailure: null,
 });
 
 const topGearResultFixture = {
@@ -146,6 +148,7 @@ const topGearResultFixture = {
     { loadout: { key: "baseline", items: { head: topGearPrepared.variants[0] }, cost: {}, changedSlots: 0, changedOptions: 0, talent: { key: "active", label: "Active", option: "talents", value: "ACTIVE", changed: false, enabled: true }, profileOptions: {} }, mean: 123000, meanError: 50, delta: 0, combinedError: 70, equivalentToBaseline: true, paretoOptimal: false, rank: 2 },
   ],
   lowJobId: 7,
+  mediumJobId: 8,
   highJobId: 9,
   actionJobId: null,
   actionPlan: [],
@@ -153,6 +156,7 @@ const topGearResultFixture = {
   finalGeneratedInput: "warrior=Core\nprofileset.winner=head=,id=154029\n",
   runtime: { simc_version: "1210-01", git_revision: "3487fce", game_version: "12.1.0.69465", game_build: 69465, channel: "live" },
   budget: { balances: { crest: 10 }, reserves: { crest: 2 }, confirmedAtUnixSeconds: 1 },
+  enhancementPolicy: "max_potential",
 } as const;
 
 const quickResultFixture = {
@@ -167,7 +171,7 @@ const quickResultFixture = {
     actions: [{ id: 184367, name: "Rampage", internal_name: "rampage", school: "physical", executes: 24.5, amount_per_fight: 1234567, metric_per_second: 45678.9, share: 0.37 }],
     buffs: [{ id: 184362, name: "Enrage", internal_name: "enrage", uptime_percent: 82.4, benefit_percent: 91.2, starts: 18 }],
     resources: [{ name: "rage", spent_per_fight: 1200, overflow_per_fight: 18, remaining_per_fight: 22 }],
-    apl_sequence: [{ time_seconds: 1.25, id: 184367, name: "Rampage", internal_name: "rampage", target: "Fluffy Pillow", resources: { rage: 80 }, resource_max: { rage: 100 } }],
+    apl_sequence: [{ time_seconds: 1.25, id: 184367, name: "Rampage", internal_name: "rampage", target: "Fluffy Pillow", resources: { rage: 80 }, resource_max: { rage: 100 }, buffs: [{ id: 184362, name: "Enrage", internal_name: "enrage", stacks: 2 }] }],
   },
   generatedInput: prepared.generatedInput,
   rawJson: "{\"sim\":{}}",
@@ -196,7 +200,7 @@ async function expectNoAutomatedAccessibilityViolations() {
 describe("application shell", () => {
   beforeEach(async () => {
     let currentTopGearSession = topGearSession("low_precision");
-    let topGearAdvances = 0;
+    let topGearStatusPolls = 0;
     mockInvoke.mockReset();
     mockOpen.mockReset();
     window.localStorage.clear();
@@ -264,13 +268,12 @@ describe("application shell", () => {
       if (command === "top_gear_prepare") return Promise.resolve(topGearPrepared);
       if (command === "top_gear_start") {
         currentTopGearSession = topGearSession("low_precision");
-        topGearAdvances = 0;
+        topGearStatusPolls = 0;
         return Promise.resolve(currentTopGearSession);
       }
-      if (command === "top_gear_status") return Promise.resolve(currentTopGearSession);
-      if (command === "top_gear_advance") {
-        topGearAdvances += 1;
-        currentTopGearSession = topGearSession(topGearAdvances === 1 ? "high_precision" : "complete");
+      if (command === "top_gear_status") {
+        topGearStatusPolls += 1;
+        currentTopGearSession = topGearSession(topGearStatusPolls === 1 ? "medium_precision" : topGearStatusPolls === 2 ? "high_precision" : "complete");
         return Promise.resolve(currentTopGearSession);
       }
       if (command === "top_gear_result") return Promise.resolve(topGearResultFixture);
@@ -582,8 +585,10 @@ describe("application shell", () => {
     expect(screen.getByRole("heading", { name: "Resources" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Buffs" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Sample action sequence" })).toBeVisible();
+    expect(screen.getByRole("columnheader", { name: "Active buffs" })).toBeVisible();
+    expect(screen.getByLabelText("2 stacks")).toBeVisible();
     expect(screen.getAllByRole("button", { name: "Show details for Rampage" })).toHaveLength(2);
-    expect(screen.getByRole("button", { name: "Show details for Enrage" })).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "Show details for Enrage" })).toHaveLength(2);
     await expectNoAutomatedAccessibilityViolations();
     await user.click(screen.getByRole("tab", { name: "Raw HTML" }));
     expect(screen.getByText(/HTML is shown as source text/)).toBeVisible();
@@ -604,11 +609,19 @@ describe("application shell", () => {
     expect(await screen.findByText("Exact execution preview")).toBeVisible();
     expect(screen.getByRole("button", { name: "Add virtual variant" })).toBeEnabled();
     expect(screen.getByRole("heading", { name: "Gear candidates" })).toBeVisible();
+    expect(screen.getAllByRole("button", { name: /Show details for .*Helm/ }).length).toBeGreaterThan(0);
     expect(screen.getByRole("checkbox", { name: /Candidate Helm/ })).toBeChecked();
     expect(screen.getAllByText("Trinkets · choose 2")).toHaveLength(2);
     expect(screen.queryByText("Trinket 1")).not.toBeInTheDocument();
     expect(screen.queryByText("Trinket 2")).not.toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /Dungeon/ })).not.toBeChecked();
+    const upgradePolicy = screen.getByRole("combobox", { name: "How should item upgrades be compared?" });
+    expect(upgradePolicy).toHaveValue("max_potential");
+    expect(screen.getByText(/Runs automatically at 1%, 0.2%, then 0.05% target error/)).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Confirmed currency budget" })).not.toBeInTheDocument();
+    await user.selectOptions(upgradePolicy, "budget_constrained");
+    expect(await screen.findByRole("heading", { name: "Confirmed currency budget" })).toBeVisible();
+    expect(mockInvoke).toHaveBeenCalledWith("top_gear_prepare", expect.objectContaining({ request: expect.objectContaining({ enhancementPolicy: "budget_constrained" }) }));
     await user.click(screen.getByRole("button", { name: "Lock Head" }));
     expect(mockInvoke).toHaveBeenCalledWith("top_gear_prepare", expect.objectContaining({ request: expect.objectContaining({ lockedSlots: ["head"] }) }));
     await user.click(screen.getByRole("button", { name: "Lock Trinkets · choose 2" }));
@@ -629,12 +642,9 @@ describe("application shell", () => {
     await user.click(screen.getByRole("button", { name: "Start Gear Optimizer" }));
     expect(await screen.findByRole("heading", { name: "Job status" })).toBeVisible();
     expect(await screen.findByRole("heading", { name: "Broad low-precision search" })).toBeVisible();
-    expect(screen.getByText("This stage is complete. Continue when you are ready for the next verification stage.")).toBeVisible();
-    expect(screen.getByRole("progressbar")).toHaveAccessibleName("2 of 4 planned profiles evaluated");
-    await user.click(screen.getByRole("button", { name: "Continue to the next verified stage" }));
-    expect(await screen.findByRole("heading", { name: "High-precision finalist verification" })).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Continue to the next verified stage" }));
-    expect(await screen.findByText("Verified loadout ranking")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Continue to the next verified stage" })).not.toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Gear optimization stages" })).toHaveTextContent("Medium-precision survivor search");
+    expect(await screen.findByText("Verified loadout ranking", {}, { timeout: 2_500 })).toBeVisible();
     expect(screen.getByText("The top result improves on your equipped setup")).toBeVisible();
     expect(screen.getByText("+500 vs. equipped")).toBeVisible();
     expect(screen.getByText("+500")).toBeVisible();

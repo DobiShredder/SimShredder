@@ -7,6 +7,7 @@
   "currency_ids": ["crest", "valor", "champion_mistcrest", "hero_mistcrest", "myth_mistcrest", "spark_of_tides"],
   "max_embellishments": 2,
   "max_sockets_per_item": 3,
+  "upgrade_tracks": {},
   "allowed_enchant_slots": [
     "back",
     "chest",

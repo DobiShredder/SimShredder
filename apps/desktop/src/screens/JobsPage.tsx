@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { quickCancel, quickJobStatus, quickRetry, type JobView } from "../quick";
 import { runKey, sameRun, type RunReference } from "../runs";
-import { topGearAdvance, topGearCancel, topGearRetry, topGearStatus, type TopGearSessionView } from "../topGear";
+import { topGearCancel, topGearRetry, topGearStatus, type TopGearSessionView } from "../topGear";
 
 const active = (state: string) => state === "queued" || state === "running";
 
@@ -37,10 +37,13 @@ export function JobsPage({ quickJobs, topGearSessions, selected, onSelect, onQui
     return () => window.clearInterval(timer);
   }, [onQuickJob, quick]);
   useEffect(() => {
-    if (!gear || gear.stage === "complete" || !active(gear.currentJob.state)) return;
+    if (!gear || gear.stage === "complete") return;
     const timer = window.setInterval(() => void topGearStatus(gear.id).then(onTopGearSession).catch((reason) => setError(String(reason))), 500);
     return () => window.clearInterval(timer);
   }, [gear, onTopGearSession]);
+  useEffect(() => {
+    if (gear?.stage === "complete") onResult({ kind: "topGear", sessionId: gear.id });
+  }, [gear?.id, gear?.stage, onResult]);
 
   const quickAction = async (kind: "cancel" | "retry") => {
     if (!quick) return;
@@ -48,13 +51,12 @@ export function JobsPage({ quickJobs, topGearSessions, selected, onSelect, onQui
     try { onQuickJob(kind === "cancel" ? await quickCancel(quick.id) : await quickRetry(quick.id)); }
     catch (reason) { setError(String(reason)); } finally { setBusy(false); }
   };
-  const gearAction = async (kind: "cancel" | "retry" | "advance") => {
+  const gearAction = async (kind: "cancel" | "retry") => {
     if (!gear) return;
     setBusy(true); setError(null);
     try {
-      const next = kind === "cancel" ? await topGearCancel(gear.id) : kind === "retry" ? await topGearRetry(gear.id) : await topGearAdvance(gear.id);
+      const next = kind === "cancel" ? await topGearCancel(gear.id) : await topGearRetry(gear.id);
       onTopGearSession(next);
-      if (kind === "advance" && next.stage === "complete") onResult({ kind: "topGear", sessionId: next.id });
     }
     catch (reason) { setError(String(reason)); } finally { setBusy(false); }
   };
@@ -77,12 +79,13 @@ function QuickJobDetail({ job, busy, error, onAction, onResult, t }: { job: JobV
   return <section className="job-card run-detail-card" aria-live="polite"><div className="job-title"><div><span>{t("jobsPage.job", { id: job.id })}</span><strong>{t(`jobsPage.${job.state}`)}</strong></div><CheckCircle2 aria-hidden="true" size={28} /></div><div className="progress-track" role="progressbar" aria-label={t("jobsPage.progress", { done: job.succeededBatches, total })} aria-valuemin={0} aria-valuemax={total} aria-valuenow={job.succeededBatches}><span style={{ width: `${total ? job.succeededBatches / total * 100 : 0}%` }} /></div><p className="muted">{t("jobsPage.progress", { done: job.succeededBatches, total })}</p>{job.failure || error ? <div className="inline-error" role="alert"><strong>{t("jobsPage.diagnostic")}</strong><code>{error ?? job.failure}</code></div> : null}<ul className="attempt-list">{job.attempts.map((attempt) => <li key={attempt.id}><span>{t("jobsPage.attempt", { sequence: attempt.sequence })}</span><strong>{t(`jobsPage.${attempt.state}`)}</strong>{attempt.cacheHit ? <small>{t("jobsPage.cacheHit")}</small> : null}{attempt.failure ? <code>{attempt.failure}</code> : null}</li>)}</ul><RunActions state={job.state} busy={busy} onCancel={() => void onAction("cancel")} onRetry={() => void onAction("retry")} onResult={onResult} t={t} /></section>;
 }
 
-function GearJobDetail({ session, busy, error, onAction, onResult, t }: { session: TopGearSessionView; busy: boolean; error: string | null; onAction: (kind: "cancel" | "retry" | "advance") => Promise<void>; onResult: () => void; t: TFunction }) {
-  const stages = ["low_precision", "high_precision", "action_plan"] as const;
-  const current = session.stage === "complete" ? stages.length : stages.indexOf(session.stage);
+function GearJobDetail({ session, busy, error, onAction, onResult, t }: { session: TopGearSessionView; busy: boolean; error: string | null; onAction: (kind: "cancel" | "retry") => Promise<void>; onResult: () => void; t: TFunction }) {
+  const stages = ["low_precision", "medium_precision", "high_precision"] as const;
+  const current = session.stage === "complete" ? stages.length : session.stage === "action_plan" ? 2 : stages.indexOf(session.stage);
   const state = session.stage === "complete" ? "succeeded" : session.currentJob.state;
-  const messageKey = `topGear.job_${state}${session.canAdvance ? "_advance" : ""}`;
-  return <section className="job-card run-detail-card" aria-live="polite"><div className="job-title"><div><span>{t("topGear.session", { id: session.id })}</span><h2>{t(`topGear.stage_${session.stage}`)}</h2></div><Layers3 aria-hidden="true" size={28} /></div><div className="optimizer-current-state"><span className={`status-dot ${active(state) ? "status-dot-active" : ""}`} aria-hidden="true" /><strong>{t(`jobsPage.${state}`)}</strong><span>{t(messageKey)}</span></div><ol className="optimizer-stages" aria-label={t("topGear.stageProgress")}>{stages.map((stage, index) => { const step = index < current || session.stage === "complete" ? "complete" : index === current ? "current" : "upcoming"; return <li data-state={step} aria-current={step === "current" ? "step" : undefined} key={stage}><span>{index + 1}</span><div><strong>{t(`topGear.stage_${stage}`)}</strong><small>{t(`topGear.step_${step}`)}</small></div></li>; })}</ol><div className={`progress-track ${active(state) ? "progress-track-indeterminate" : ""}`} role="progressbar" aria-label={t("topGear.progress", { done: session.completedExecutions, total: session.totalExecutions })} aria-valuemin={0} aria-valuemax={session.totalExecutions} aria-valuenow={active(state) ? undefined : session.completedExecutions}><span style={active(state) ? undefined : { width: `${session.totalExecutions ? session.completedExecutions / session.totalExecutions * 100 : 0}%` }} /></div><p className="muted">{t("topGear.progress", { done: session.completedExecutions, total: session.totalExecutions })}</p>{session.currentJob.failure || error ? <div className="inline-error" role="alert"><strong>{t("jobsPage.diagnostic")}</strong><code>{error ?? session.currentJob.failure}</code></div> : null}<div className="button-row">{active(state) ? <button className="secondary-button" disabled={busy} type="button" onClick={() => void onAction("cancel")}><CircleStop aria-hidden="true" size={18} />{t("jobsPage.cancel")}</button> : null}{["failed", "canceled", "interrupted"].includes(state) ? <button className="secondary-button" disabled={busy} type="button" onClick={() => void onAction("retry")}><RotateCcw aria-hidden="true" size={18} />{t("jobsPage.retry")}</button> : null}{session.canAdvance ? <button className="primary-button" disabled={busy} type="button" onClick={() => void onAction("advance")}>{t("topGear.continueStage")}</button> : null}{session.stage === "complete" ? <button className="primary-button" type="button" onClick={onResult}><BarChart3 aria-hidden="true" size={18} />{t("jobsPage.viewResult")}</button> : null}</div></section>;
+  const messageKey = `topGear.job_${state}`;
+  const diagnostic = error ?? session.pipelineFailure ?? session.currentJob.failure;
+  return <section className="job-card run-detail-card" aria-live="polite"><div className="job-title"><div><span>{t("topGear.session", { id: session.id })}</span><h2>{t(`topGear.stage_${session.stage}`)}</h2></div><Layers3 aria-hidden="true" size={28} /></div><div className="optimizer-current-state"><span className={`status-dot ${active(state) ? "status-dot-active" : ""}`} aria-hidden="true" /><strong>{t(`jobsPage.${state}`)}</strong><span>{t(messageKey)}</span></div><ol className="optimizer-stages" aria-label={t("topGear.stageProgress")}>{stages.map((stage, index) => { const step = index < current || session.stage === "complete" ? "complete" : index === current ? "current" : "upcoming"; return <li data-state={step} aria-current={step === "current" ? "step" : undefined} key={stage}><span>{index + 1}</span><div><strong>{t(`topGear.stage_${stage}`)}</strong><small>{t(`topGear.step_${step}`)}</small></div></li>; })}</ol><div className={`progress-track ${active(state) ? "progress-track-indeterminate" : ""}`} role="progressbar" aria-label={t("topGear.progress", { done: session.completedExecutions, total: session.totalExecutions })} aria-valuemin={0} aria-valuemax={session.totalExecutions} aria-valuenow={active(state) ? undefined : session.completedExecutions}><span style={active(state) ? undefined : { width: `${session.totalExecutions ? session.completedExecutions / session.totalExecutions * 100 : 0}%` }} /></div><p className="muted">{t("topGear.progress", { done: session.completedExecutions, total: session.totalExecutions })}</p>{diagnostic ? <div className="inline-error" role="alert"><strong>{t("jobsPage.diagnostic")}</strong><code>{diagnostic}</code></div> : null}<div className="button-row">{active(state) ? <button className="secondary-button" disabled={busy} type="button" onClick={() => void onAction("cancel")}><CircleStop aria-hidden="true" size={18} />{t("jobsPage.cancel")}</button> : null}{["failed", "canceled", "interrupted"].includes(state) || session.pipelineFailure ? <button className="secondary-button" disabled={busy} type="button" onClick={() => void onAction("retry")}><RotateCcw aria-hidden="true" size={18} />{t("jobsPage.retry")}</button> : null}{session.stage === "complete" ? <button className="primary-button" type="button" onClick={onResult}><BarChart3 aria-hidden="true" size={18} />{t("jobsPage.viewResult")}</button> : null}</div></section>;
 }
 
 function RunActions({ state, busy, onCancel, onRetry, onResult, t }: { state: string; busy: boolean; onCancel: () => void; onRetry: () => void; onResult: () => void; t: TFunction }) {

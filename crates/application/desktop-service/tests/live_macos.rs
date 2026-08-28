@@ -95,7 +95,7 @@ fn import_preview_queue_and_result_match_the_gui_request() {
 
 #[test]
 #[ignore = "executes staged Top Gear profilesets with an official SimulationCraft runtime"]
-fn top_gear_runs_low_and_high_precision_through_the_persistent_queue() {
+fn top_gear_runs_three_adaptive_stages_through_the_persistent_queue() {
     let executable = required_path("SIMSHREDDER_SIMC");
     let revision =
         env::var("SIMSHREDDER_SIMC_REVISION").expect("SIMSHREDDER_SIMC_REVISION must be provided");
@@ -137,12 +137,19 @@ fn top_gear_runs_low_and_high_precision_through_the_persistent_queue() {
         balances: BTreeMap::from([("crest".into(), 10), ("valor".into(), 10)]),
         reserves: BTreeMap::from([("crest".into(), 2)]),
         currency_confirmed_at_unix_seconds: 1,
+        enhancement_policy: simshredder_top_gear::EnhancementPolicy::MaxPotential,
+        target_rank_overrides: BTreeMap::new(),
+        upgrade_metadata: None,
+        upgrade_metadata_confirmed: false,
         rule_revision: "12.1.0-69465-v1".into(),
         game_build: 69465,
         combination_limit: 16,
         low_iterations: 100,
         high_iterations: 200,
         finalist_count: 2,
+        low_target_error: 0.01,
+        medium_target_error: 0.002,
+        high_target_error: 0.0005,
     };
     let temporary = tempfile::tempdir().expect("temporary app data must be available");
     let service = DesktopService::open(temporary.path()).expect("service must open");
@@ -175,7 +182,7 @@ fn top_gear_runs_low_and_high_precision_through_the_persistent_queue() {
         .expect("Top Gear preview must succeed");
     assert_eq!(preview.raw_combinations, 2);
     assert_eq!(preview.valid_combinations, 2);
-    assert_eq!(preview.execution_count, 4);
+    assert_eq!(preview.execution_count, 6);
 
     let low = service
         .start_top_gear(&request, &runtime)
@@ -184,28 +191,21 @@ fn top_gear_runs_low_and_high_precision_through_the_persistent_queue() {
         service.run_next(low.token.expect("low token")).expect("low stage must run"),
         DispatchResult::Executed { job_id, .. } if Some(job_id) == low.job_id
     ));
-    assert!(
-        service
-            .top_gear_status(&low.view.id)
-            .expect("session must load")
-            .can_advance
-    );
-
+    let medium = service
+        .advance_top_gear(&low.view.id, &runtime)
+        .expect("medium-precision stage must enqueue");
+    assert!(matches!(
+        service.run_next(medium.token.expect("medium token")).expect("medium stage must run"),
+        DispatchResult::Executed { job_id, .. } if Some(job_id) == medium.job_id
+    ));
     let high = service
         .advance_top_gear(&low.view.id, &runtime)
         .expect("high-precision stage must enqueue");
     assert!(matches!(
-        service.run_next(high.token.expect("high token")).expect("high stage must run"),
-        DispatchResult::Executed { job_id, .. } if Some(job_id) == high.job_id
-    ));
-    let action = service
-        .advance_top_gear(&low.view.id, &runtime)
-        .expect("action stage must finalize");
-    assert!(matches!(
         service
-            .run_next(action.token.expect("action token"))
-            .expect("action stage must run"),
-        DispatchResult::Executed { job_id, .. } if Some(job_id) == action.job_id
+            .run_next(high.token.expect("high token"))
+            .expect("high stage must run"),
+        DispatchResult::Executed { job_id, .. } if Some(job_id) == high.job_id
     ));
     let result = service
         .top_gear_result(&low.view.id)
@@ -223,7 +223,11 @@ fn top_gear_runs_low_and_high_precision_through_the_persistent_queue() {
             .iter()
             .all(|entry| entry.combined_error >= 0.0)
     );
-    assert_eq!(result.action_plan.len(), 1);
+    assert!(result.action_plan.is_empty());
+    assert_eq!(
+        result.enhancement_policy,
+        simshredder_top_gear::EnhancementPolicy::MaxPotential
+    );
     let export = service
         .export_top_gear(&low.view.id, &temporary.path().join("exports"))
         .expect("Top Gear artifacts must export atomically");

@@ -267,9 +267,7 @@ describe("supported desktop shell", () => {
     expect(await browser.checkScreen(`top-gear-options-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(3));
 
     if (mode === "live") {
-      await (await $("//label[contains(.,'넓은 탐색 반복 횟수')]//input")).setValue("100");
-      await (await $("//label[contains(.,'최종 후보 반복 횟수')]//input")).setValue("100");
-      await (await $("//label[contains(.,'고정밀 최종 후보 수')]//input")).setValue("2");
+      await expect($("//label[contains(.,'장비 강화를 어떻게 비교할까요?')]//select")).toHaveValue("max_potential");
       await (await $("button=미리보기 갱신")).click();
       const startTopGear = await $("button=장비 최적화 시작");
       await startTopGear.waitForEnabled({ timeout: 20_000 });
@@ -279,25 +277,13 @@ describe("supported desktop shell", () => {
         if (await diagnostic.isExisting()) throw new Error(`Gear Optimizer start failed: ${await diagnostic.getText()}`);
         return await $(".job-card").isExisting();
       }, { timeout: 90_000 });
-      const continueStage = await $("button=다음 검증 단계 계속");
-      await continueStage.waitForDisplayed({ timeout: autoInstall ? 300_000 : 120_000 });
-      await continueStage.waitForEnabled({ timeout: 20_000 });
-      await continueStage.click();
-      await browser.waitUntil(async () => {
-        const stage = await $(".job-title strong").getText();
-        const diagnostic = await $(".inline-error code");
-        if (await diagnostic.isExisting()) throw new Error(`Gear Optimizer advance failed: ${await diagnostic.getText()}`);
-        return stage === "고정밀 최종 후보 검증";
-      }, { timeout: 90_000 });
-      const finalizeStage = await $("button=다음 검증 단계 계속");
-      await finalizeStage.waitForDisplayed({ timeout: autoInstall ? 300_000 : 120_000 });
-      await finalizeStage.waitForEnabled({ timeout: 20_000 });
-      await finalizeStage.click();
+      await expect($("ol[aria-label='장비 최적화 진행 단계']")).toHaveText(expect.stringContaining("중간 정밀 생존 후보 탐색"));
+      await expect($("button=다음 검증 단계 계속")).not.toBeExisting();
       const finalInput = await $("h2=최종 검증 .simc 입력");
-      await finalInput.waitForDisplayed({ timeout: autoInstall ? 300_000 : 180_000 });
+      await finalInput.waitForDisplayed({ timeout: autoInstall ? 600_000 : 300_000 });
       await expect($("h2=검증된 장비 조합 순위")).toBeDisplayed();
       await (await $("button=검증된 장비 최적화 산출물 내보내기")).click();
-      await expect($("p*=파일 5개를 내보냈습니다")).toBeDisplayed();
+      await expect($("p*=파일 6개를 내보냈습니다")).toBeDisplayed();
     }
   });
 });

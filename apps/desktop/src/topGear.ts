@@ -9,6 +9,24 @@ export type GearSlot =
 export type CostVector = Record<string, number>;
 export type ChangeKind = "equip" | "gem" | "enchant" | "upgrade" | "catalyst";
 export type WeaponKind = "none" | "one_hand" | "two_hand" | "off_hand";
+export type EnhancementPolicy = "max_potential" | "budget_constrained" | "current_state";
+export type UpgradeMetadataSource = "profile" | "rule" | "manual" | "unknown";
+
+export type ItemUpgradeMetadata = {
+  ownedItemKey: string;
+  currentRank: number;
+  maxRank: number | null;
+  track?: string | null;
+  source: UpgradeMetadataSource;
+};
+
+export type UpgradeMetadata = {
+  rawFields: Record<string, string>;
+  sourceLines: Record<string, number>;
+  currencies: Record<string, number>;
+  achievements: number[];
+  slotHighWatermarks: Record<string, { slotIndex: number; characterItemLevel: number; accountItemLevel: number }>;
+};
 
 export type UpgradeAction = {
   id: string;
@@ -33,6 +51,7 @@ export type ItemVariant = {
   enchantId: number | null;
   simcOptions: Record<string, string>;
   cost: CostVector;
+  upgrade?: ItemUpgradeMetadata;
   actions: UpgradeAction[];
   uniqueGroups: string[];
   setGroups: string[];
@@ -75,12 +94,16 @@ export type TopGearRequest = {
   balances: CostVector;
   reserves: CostVector;
   currencyConfirmedAtUnixSeconds: number;
+  enhancementPolicy: EnhancementPolicy;
+  targetRankOverrides: Record<string, number>;
+  upgradeMetadata: UpgradeMetadata | null;
+  upgradeMetadataConfirmed: boolean;
   ruleRevision: string;
   gameBuild: number;
   combinationLimit: number;
-  lowIterations: number;
-  highIterations: number;
-  finalistCount: number;
+  lowTargetError: number;
+  mediumTargetError: number;
+  highTargetError: number;
 };
 
 export type PreparedTopGear = {
@@ -103,24 +126,29 @@ export type PreparedTopGear = {
     symmetricDuplicate: number;
     minimumSetBonus: number;
     catalystLimit: number;
+    enhancementPolicy: number;
   };
   generatedInput: string;
   variants: ItemVariant[];
   talentLoadouts: TalentVariant[];
   profileOptions: Record<string, ProfileOptionVariant[]>;
   loadouts: Loadout[];
+  enhancementPolicy: EnhancementPolicy;
+  upgradeMetadata: UpgradeMetadata | null;
 };
 
 export type TopGearSessionView = {
   id: string;
-  stage: "low_precision" | "high_precision" | "action_plan" | "complete";
+  stage: "low_precision" | "medium_precision" | "high_precision" | "action_plan" | "complete";
   currentJob: JobView;
   lowJobId: number;
+  mediumJobId: number | null;
   highJobId: number | null;
   actionJobId: number | null;
   completedExecutions: number;
   totalExecutions: number;
   canAdvance: boolean;
+  pipelineFailure: string | null;
 };
 
 export type PlannedAction = {
@@ -150,6 +178,7 @@ export type TopGearResultView = {
   ruleRevision: string;
   ranked: RankedLoadout[];
   lowJobId: number;
+  mediumJobId: number | null;
   highJobId: number;
   actionJobId: number | null;
   actionPlan: PlannedAction[];
@@ -163,6 +192,7 @@ export type TopGearResultView = {
     channel: string;
   };
   budget: { balances: CostVector; reserves: CostVector; confirmedAtUnixSeconds: number };
+  enhancementPolicy: EnhancementPolicy;
 };
 
 export function defaultTopGearRequest(quick: QuickSimRequest): TopGearRequest {
@@ -177,12 +207,16 @@ export function defaultTopGearRequest(quick: QuickSimRequest): TopGearRequest {
     balances: { champion_mistcrest: 0, hero_mistcrest: 0, myth_mistcrest: 0, spark_of_tides: 0 },
     reserves: { champion_mistcrest: 0, hero_mistcrest: 0, myth_mistcrest: 0, spark_of_tides: 0 },
     currencyConfirmedAtUnixSeconds: Math.floor(Date.now() / 1000),
+    enhancementPolicy: "max_potential",
+    targetRankOverrides: {},
+    upgradeMetadata: null,
+    upgradeMetadataConfirmed: false,
     ruleRevision: "12.1.0-69465-v1",
     gameBuild: 69465,
     combinationLimit: 1_024,
-    lowIterations: 1_000,
-    highIterations: 10_000,
-    finalistCount: 8,
+    lowTargetError: 0.01,
+    mediumTargetError: 0.002,
+    highTargetError: 0.0005,
   };
 }
 
