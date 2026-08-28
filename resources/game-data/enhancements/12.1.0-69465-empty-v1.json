@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "revision": "12.1.0-69465-empty-v1",
+  "gameVersion": "12.1.0",
+  "gameBuild": 69465,
+  "season": "Midnight Season 2",
+  "generatedAt": "2026-08-28T00:00:00Z",
+  "source": "SimShredder 0.x empty catalog; exact IDs remain user-supplied",
+  "entries": []
+}

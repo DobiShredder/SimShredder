@@ -1,0 +1,24 @@
+# Standard SimulationCraft TCI syntax fixture
+warrior="Advanced Warrior"
+level=90
+race=orc
+role=attack
+spec=fury
+load_default_gear=1
+default_actions=0
+
+$(usable)=target.time_to_die>0
+actions=auto_attack
+actions+=/bloodthirst,if=$(usable)
+raid_events+=/movement,cooldown=30,duration=1
+calculate_scale_factors=0
+
+iterations=100
+fixed_time=1
+max_time=20
+vary_combat_length=0
+desired_targets=1
+fight_style=Patchwerk
+threads=1
+seed=12345
+report_details=1

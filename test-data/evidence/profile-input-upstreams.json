@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "checked_at": "2026-08-28",
+  "sources": [
+    {
+      "repository": "https://github.com/simulationcraft/simc-addon",
+      "branch": "master",
+      "commit": "305f97962d94428727d6b359199c5f8c2d998c76",
+      "license": "GPL-3.0",
+      "use": "export syntax evidence only; source is not copied"
+    },
+    {
+      "repository": "https://github.com/simulationcraft/simc-profile",
+      "branch": "main",
+      "commit": "8487871b9c6f7de39e68f5e5e6db9322fc08c1d7",
+      "license": "GPL-3.0",
+      "use": "opt-in external corpus test; profiles are not vendored"
+    },
+    {
+      "repository": "https://github.com/simulationcraft/simc",
+      "branch": "midnight",
+      "commit": "6266922349614eca3bac09383b3bc71fab55f726",
+      "license": "GPL-3.0",
+      "use": "TCI and executable behavior evidence only; source is not copied"
+    }
+  ]
+}

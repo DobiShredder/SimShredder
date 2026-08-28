@@ -87,15 +87,19 @@ describe("local entity tooltips", () => {
     render(<EntityTooltip model={model} />);
 
     const trigger = screen.getByRole("button", { name: "Show details for Item 154029" });
-    expect(trigger).toHaveAttribute("aria-describedby");
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Equipment · Head · ID 154029");
+    expect(trigger).toHaveAttribute("aria-haspopup", "dialog");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(mockInvoke).not.toHaveBeenCalled();
 
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("dialog")).toHaveTextContent("Equipment · Head · ID 154029");
     await user.click(screen.getByRole("button", { name: "View on Wowhead" }));
     expect(mockInvoke).toHaveBeenCalledWith("open_wowhead_reference", { kind: "item", id: 154029 });
   });
 
-  it("renders an unidentified talent configuration locally without inventing an external reference", () => {
+  it("renders an unidentified talent configuration locally without inventing an external reference", async () => {
+    const user = userEvent.setup();
     render(<EntityTooltip model={{
       kind: "talent",
       id: null,
@@ -104,8 +108,10 @@ describe("local entity tooltips", () => {
       details: [{ label: "Talent loadout", value: "CgEAAAAAAAA" }],
     }} />);
 
-    expect(screen.getByRole("button", { name: "Show details for Talent configuration" })).toBeVisible();
-    expect(screen.getByRole("tooltip")).toHaveTextContent("TalentTalent loadoutCgEAAAAAAAA");
+    const trigger = screen.getByRole("button", { name: "Show details for Talent configuration" });
+    expect(trigger).toBeVisible();
+    await user.click(trigger);
+    expect(screen.getByRole("dialog")).toHaveTextContent("TalentTalent loadoutCgEAAAAAAAA");
     expect(screen.queryByRole("button", { name: "View on Wowhead" })).not.toBeInTheDocument();
     expect(mockInvoke).not.toHaveBeenCalled();
   });

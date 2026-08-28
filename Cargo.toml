@@ -6,6 +6,7 @@ members = [
   "crates/core/domain",
   "crates/core/input-builder",
   "crates/core/profile-parser",
+  "crates/data/enhancement-catalog",
   "crates/features/top-gear",
   "crates/infrastructure/icon-cache",
   "crates/infrastructure/job-runner",

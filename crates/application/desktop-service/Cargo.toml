@@ -10,6 +10,7 @@ atomic-write-file.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+profile-parser = { path = "../../core/profile-parser" }
 simc-adapter = { path = "../../infrastructure/simc-adapter" }
 simshredder-core = { path = "../headless-core" }
 simshredder-domain = { path = "../../core/domain" }

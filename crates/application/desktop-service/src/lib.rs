@@ -210,6 +210,25 @@ pub struct ProfileSummary {
     pub bag_items: usize,
     pub talents: Vec<TalentConfiguration>,
     pub warnings: Vec<String>,
+    pub input_compatibility: InputCompatibilityView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputCompatibilityView {
+    pub supported_editable: usize,
+    pub preserved_not_editable: usize,
+    pub execution_blocked: usize,
+    pub diagnostics: Vec<InputCompatibilityDiagnosticView>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputCompatibilityDiagnosticView {
+    pub line: usize,
+    pub key: Option<String>,
+    pub category: String,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -794,6 +813,33 @@ fn summarize(prepared: &PreparedRun) -> ProfileSummary {
             })
             .collect(),
         warnings: Vec::new(),
+        input_compatibility: InputCompatibilityView {
+            supported_editable: prepared.compatibility.supported_editable,
+            preserved_not_editable: prepared.compatibility.preserved_not_editable,
+            execution_blocked: prepared.compatibility.execution_blocked,
+            diagnostics: prepared
+                .compatibility
+                .diagnostics
+                .iter()
+                .map(|entry| InputCompatibilityDiagnosticView {
+                    line: entry.line,
+                    key: entry.key.clone(),
+                    category: match entry.category {
+                        profile_parser::CompatibilityCategory::SupportedEditable => {
+                            "supportedEditable"
+                        }
+                        profile_parser::CompatibilityCategory::PreservedNotEditable => {
+                            "preservedNotEditable"
+                        }
+                        profile_parser::CompatibilityCategory::ExecutionBlocked => {
+                            "executionBlocked"
+                        }
+                    }
+                    .into(),
+                    reason: entry.reason.clone(),
+                })
+                .collect(),
+        },
     }
 }
 

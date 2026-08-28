@@ -72,6 +72,17 @@ export type ProfileSummary = {
   bagItems: number;
   talents: Array<{ name: string; value: string }>;
   warnings: string[];
+  inputCompatibility: {
+    supportedEditable: number;
+    preservedNotEditable: number;
+    executionBlocked: number;
+    diagnostics: Array<{
+      line: number;
+      key: string | null;
+      category: "supportedEditable" | "preservedNotEditable" | "executionBlocked";
+      reason: string;
+    }>;
+  };
 };
 
 export type PreparedQuickSim = {

@@ -316,7 +316,15 @@ pub fn generate_loadouts(rules: &RuleManifest, request: &SearchRequest) -> Resul
     let pruned_candidates: BTreeMap<_, _> = request
         .candidates
         .iter()
-        .map(|(slot, candidates)| (*slot, prune_dominated_variants(candidates)))
+        .map(|(slot, candidates)| {
+            let mut candidates = prune_dominated_variants(candidates);
+            candidates.sort_by(|left, right| {
+                left.changed
+                    .cmp(&right.changed)
+                    .then_with(|| left.key.cmp(&right.key))
+            });
+            (*slot, candidates)
+        })
         .collect();
     let dominated_variants = request
         .candidates
@@ -324,8 +332,24 @@ pub fn generate_loadouts(rules: &RuleManifest, request: &SearchRequest) -> Resul
         .map(Vec::len)
         .sum::<usize>()
         .saturating_sub(pruned_candidates.values().map(Vec::len).sum::<usize>());
+    let mut talent_candidates = request.talent_candidates.clone();
+    talent_candidates.sort_by(|left, right| {
+        left.changed
+            .cmp(&right.changed)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    let mut option_candidates = request.option_candidates.clone();
+    for candidates in option_candidates.values_mut() {
+        candidates.sort_by(|left, right| {
+            left.changed
+                .cmp(&right.changed)
+                .then_with(|| left.key.cmp(&right.key))
+        });
+    }
     let pruned_request = SearchRequest {
         candidates: pruned_candidates,
+        talent_candidates,
+        option_candidates,
         ..request.clone()
     };
 
@@ -371,7 +395,9 @@ fn enumerate(
     if index == slots.len() {
         match make_loadout(rules, request, selected)? {
             Ok(base_loadout) => {
-                if is_canonical_symmetric_selection(&base_loadout.items) {
+                if base_loadout.changed_slots == 0
+                    || is_canonical_symmetric_selection(&base_loadout.items)
+                {
                     for talent in request
                         .talent_candidates
                         .iter()
@@ -455,6 +481,7 @@ fn make_loadout(
     request: &SearchRequest,
     selected: &BTreeMap<GearSlot, ItemVariant>,
 ) -> Result<std::result::Result<Loadout, RejectionReason>> {
+    let is_worn_baseline = selected.values().all(|item| !item.changed);
     let mut unique = BTreeSet::new();
     let mut embellishments = 0_u8;
     let mut cost = CostVector::new();
@@ -466,13 +493,14 @@ fn make_loadout(
         }
         validate_simc_options(&item.simc_options)?;
         validate_actions(item)?;
-        if item.gem_ids.len() > usize::from(rules.max_sockets_per_item) {
+        if item.changed && item.gem_ids.len() > usize::from(rules.max_sockets_per_item) {
             return Ok(Err(RejectionReason::SocketLimit));
         }
-        if item.enchant_id.is_some() && !rules.allowed_enchant_slots.contains(slot) {
+        if item.changed && item.enchant_id.is_some() && !rules.allowed_enchant_slots.contains(slot)
+        {
             return Ok(Err(RejectionReason::EnchantSlot));
         }
-        if !item.unique_groups.iter().all(|group| unique.insert(group)) {
+        if !is_worn_baseline && !item.unique_groups.iter().all(|group| unique.insert(group)) {
             return Ok(Err(RejectionReason::UniqueEquipped));
         }
         embellishments += u8::from(item.embellishment);
@@ -483,21 +511,23 @@ fn make_loadout(
         }
         add_cost(&mut cost, &item.cost)?;
     }
-    if embellishments > rules.max_embellishments {
+    if !is_worn_baseline && embellishments > rules.max_embellishments {
         return Ok(Err(RejectionReason::EmbellishmentLimit));
     }
-    if !valid_weapons(selected) {
+    if !is_worn_baseline && !valid_weapons(selected) {
         return Ok(Err(RejectionReason::WeaponConstraint));
     }
-    if catalyst_uses > request.catalyst_charges {
+    if !is_worn_baseline && catalyst_uses > request.catalyst_charges {
         return Ok(Err(RejectionReason::CatalystLimit));
     }
-    if request.minimum_set_pieces.iter().any(|(group, minimum)| {
-        set_pieces.get(group.as_str()).copied().unwrap_or_default() < *minimum
-    }) {
+    if !is_worn_baseline
+        && request.minimum_set_pieces.iter().any(|(group, minimum)| {
+            set_pieces.get(group.as_str()).copied().unwrap_or_default() < *minimum
+        })
+    {
         return Ok(Err(RejectionReason::MinimumSetBonus));
     }
-    if !within_budget(&cost, &request.budget, &rules.currency_ids)? {
+    if !is_worn_baseline && !within_budget(&cost, &request.budget, &rules.currency_ids)? {
         return Ok(Err(RejectionReason::Budget));
     }
     let canonical = canonical_selection_key(selected);
@@ -636,13 +666,15 @@ fn prune_dominated_variants(candidates: &[ItemVariant]) -> Vec<ItemVariant> {
         .iter()
         .enumerate()
         .filter(|(index, candidate)| {
-            !candidates.iter().enumerate().any(|(other_index, other)| {
-                other_index != *index
-                    && same_final_tuple(other, candidate)
-                    && cost_dominates(&other.cost, &candidate.cost)
-                    && (normalized_cost(&other.cost) != normalized_cost(&candidate.cost)
-                        || other.key < candidate.key)
-            })
+            !candidate.changed
+                || !candidates.iter().enumerate().any(|(other_index, other)| {
+                    other_index != *index
+                        && same_final_tuple(other, candidate)
+                        && cost_dominates(&other.cost, &candidate.cost)
+                        && (!other.changed
+                            || normalized_cost(&other.cost) != normalized_cost(&candidate.cost)
+                            || other.key < candidate.key)
+                })
         })
         .map(|(_, candidate)| candidate.clone())
         .collect()
@@ -1648,6 +1680,45 @@ mod tests {
     }
 
     #[test]
+    fn preserves_worn_baseline_with_existing_enchant_outside_candidate_rules() {
+        let mut worn = variant("worn", GearSlot::Head, 0);
+        worn.enchant_id = Some(8017);
+        worn.simc_options.insert("enchant_id".into(), "8017".into());
+
+        let preview = generate_loadouts(
+            &rules(),
+            &request(BTreeMap::from([(GearSlot::Head, vec![worn])])),
+        )
+        .unwrap();
+
+        assert_eq!(preview.raw_combinations, 1);
+        assert_eq!(preview.valid_combinations, 1);
+        assert_eq!(preview.emitted_combinations, 1);
+        assert_eq!(preview.loadouts[0].changed_slots, 0);
+        assert_eq!(preview.rejections.enchant_slot, 0);
+    }
+
+    #[test]
+    fn preserves_and_emits_baseline_before_an_identical_changed_candidate() {
+        let worn = variant("worn", GearSlot::Head, 0);
+        let changed = ItemVariant {
+            key: "aaa".into(),
+            changed: true,
+            ..worn.clone()
+        };
+        let mut search = request(BTreeMap::from([(GearSlot::Head, vec![changed, worn])]));
+        search.max_combinations = 1;
+
+        let preview = generate_loadouts(&rules(), &search).unwrap();
+
+        assert_eq!(preview.raw_combinations, 2);
+        assert_eq!(preview.valid_combinations, 1);
+        assert_eq!(preview.emitted_combinations, 1);
+        assert_eq!(preview.rejections.dominated_variants, 1);
+        assert_eq!(preview.loadouts[0].changed_slots, 0);
+    }
+
+    #[test]
     fn removes_same_tuple_variant_with_dominated_cost_and_rejects_injection() {
         let cheap = variant("cheap", GearSlot::Head, 1);
         let costly = ItemVariant {
@@ -1821,8 +1892,9 @@ mod tests {
         search.catalyst_charges = 1;
         search.minimum_set_pieces.insert("tier".into(), 2);
         let preview = generate_loadouts(&rules(), &search).unwrap();
-        assert_eq!(preview.valid_combinations, 0);
-        assert_eq!(preview.rejections.minimum_set_bonus, 2);
+        assert_eq!(preview.valid_combinations, 1);
+        assert_eq!(preview.loadouts[0].changed_slots, 0);
+        assert_eq!(preview.rejections.minimum_set_bonus, 1);
     }
 
     #[test]

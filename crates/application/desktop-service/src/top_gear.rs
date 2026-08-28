@@ -966,11 +966,11 @@ mod tests {
     }
 
     #[test]
-    fn raidbots_profile_populates_named_items_and_saved_talent_dimensions() {
+    fn addon_style_comments_populate_named_items_and_saved_talent_dimensions() {
         let temporary = tempfile::tempdir().unwrap();
         let service = DesktopService::open(temporary.path()).unwrap();
         let mut request = request();
-        request.quick.source = "# Raidbots-generated SimC input\nrogue=Character\nlevel=90\nrace=void_elf\nrole=melee\nspec=subtlety\ntalents=ACTIVE\n# Saved Loadout: Dungeon\n# talents=SAVED\n# Named Helm (289)\nhead=,id=250006,context=35\n".into();
+        request.quick.source = "rogue=Character\nlevel=90\nrace=void_elf\nrole=melee\nspec=subtlety\ntalents=ACTIVE\n# Saved Loadout: Dungeon\n# talents=SAVED\n# Named Helm (289)\nhead=,id=250006,enchant_id=8017,context=35\n".into();
         request.variants.clear();
         request.talent_loadouts.clear();
         request.profile_options.clear();
@@ -983,6 +983,8 @@ mod tests {
         assert_eq!(preview.talent_loadouts[1].label, "Dungeon");
         assert!(!preview.talent_loadouts[1].enabled);
         assert_eq!(preview.raw_combinations, 1);
+        assert_eq!(preview.loadouts.len(), 1);
+        assert_eq!(preview.loadouts[0].changed_slots, 0);
     }
 
     #[test]

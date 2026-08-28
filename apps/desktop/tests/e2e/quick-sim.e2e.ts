@@ -114,11 +114,13 @@ describe("supported desktop shell", () => {
     await (await $("button=Review profile")).click();
     const reviewHeading = await $("h1=Review simulation input");
     await reviewHeading.waitForDisplayed({ timeout: 60_000 });
-    await expect($("pre")).toHaveText(expect.stringContaining('warrior="DesktopE2E"'));
+    await expect($("pre")).toHaveText(expect.stringContaining("warrior=DesktopE2E"));
     await expect($("pre")).toHaveText(expect.stringContaining("iterations=10000"));
+    await expect($("summary=Input compatibility")).toBeDisplayed();
+    await $(".semantic-icon-talent").click();
     const talentTooltipContract = await browser.execute(() => {
       const trigger = document.querySelector<HTMLButtonElement>(".semantic-icon-talent");
-      const panel = trigger?.nextElementSibling as HTMLElement | null;
+      const panel = document.querySelector<HTMLElement>(".entity-tooltip-panel");
       return {
         focusable: trigger?.tabIndex === 0,
         text: panel?.textContent ?? "",
@@ -128,6 +130,7 @@ describe("supported desktop shell", () => {
     expect(talentTooltipContract).toEqual(expect.objectContaining({ focusable: true, externalAction: false }));
     expect(talentTooltipContract.text).toContain("Class talents");
     expect(talentTooltipContract.text).toContain("Hero talents");
+    await browser.keys("Escape");
 
     await (await $("button=Profile")).click();
     await expect($("h2=Saved characters")).toBeDisplayed();
@@ -199,14 +202,25 @@ describe("supported desktop shell", () => {
       await expect($("h2=자원")).toBeDisplayed();
       await expect($("h2=버프")).toBeDisplayed();
       await expect($("h2=행동 순서 표본")).toBeDisplayed();
+      await $(".semantic-icon-spell").click();
       const spellTooltipContract = await browser.execute(() => {
         const trigger = document.querySelector<HTMLButtonElement>(".semantic-icon-spell");
-        const panel = trigger?.nextElementSibling as HTMLElement | null;
-        return { focusable: trigger?.tabIndex === 0, text: panel?.textContent ?? "" };
+        const panel = document.querySelector<HTMLElement>(".entity-tooltip-panel");
+        const action = panel?.querySelector<HTMLButtonElement>(".tooltip-link");
+        const bounds = action?.getBoundingClientRect();
+        const hit = bounds ? document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2) : null;
+        return {
+          focusable: trigger?.tabIndex === 0,
+          text: panel?.textContent ?? "",
+          actionClickable: Boolean(action && hit && (hit === action || action.contains(hit))),
+          panelInsideViewport: Boolean(panel && panel.getBoundingClientRect().top >= 0 && panel.getBoundingClientRect().bottom <= window.innerHeight),
+        };
       });
       expect(spellTooltipContract.focusable).toBe(true);
       expect(spellTooltipContract.text).toContain("Wowhead에서 자세히 보기");
-      await browser.execute(() => (document.activeElement as HTMLElement | null)?.blur());
+      expect(spellTooltipContract.actionClickable).toBe(true);
+      expect(spellTooltipContract.panelInsideViewport).toBe(true);
+      await browser.keys("Escape");
       await expect($("h2=실행 산출물")).toBeDisplayed();
       expect(await browser.checkScreen("result-ko-dark", {
         ignoreAntialiasing: true,
@@ -224,14 +238,25 @@ describe("supported desktop shell", () => {
     await expect($("h2=소모품 및 Omnium Folio")).toBeDisplayed();
     await expect($("h2=특성 로드아웃")).toBeDisplayed();
     await expect($("nav[aria-label='장비 최적화 섹션']")).toBeDisplayed();
+    await $(".semantic-icon-item").click();
     const itemTooltipContract = await browser.execute(() => {
       const trigger = document.querySelector<HTMLButtonElement>(".semantic-icon-item");
-      const panel = trigger?.nextElementSibling as HTMLElement | null;
-      return { focusable: trigger?.tabIndex === 0, text: panel?.textContent ?? "" };
+      const panel = document.querySelector<HTMLElement>(".entity-tooltip-panel");
+      const action = panel?.querySelector<HTMLButtonElement>(".tooltip-link");
+      const bounds = action?.getBoundingClientRect();
+      const hit = bounds ? document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2) : null;
+      return {
+        focusable: trigger?.tabIndex === 0,
+        text: panel?.textContent ?? "",
+        actionClickable: Boolean(action && hit && (hit === action || action.contains(hit))),
+        panelInsideViewport: Boolean(panel && panel.getBoundingClientRect().top >= 0 && panel.getBoundingClientRect().bottom <= window.innerHeight),
+      };
     });
     expect(itemTooltipContract.focusable).toBe(true);
     expect(itemTooltipContract.text).toContain("장비");
     expect(itemTooltipContract.text).toContain("Wowhead에서 자세히 보기");
+    expect(itemTooltipContract).toEqual(expect.objectContaining({ actionClickable: true, panelInsideViewport: true }));
+    await browser.keys("Escape");
     await browser.execute(() => {
       (document.activeElement as HTMLElement | null)?.blur();
       window.scrollTo({ top: 0, left: 0, behavior: "auto" });

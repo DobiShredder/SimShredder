@@ -64,6 +64,16 @@ export function QuickSimPage({ request, preview, onChange, onStarted, onImport }
         <div><span>{t("quick.equipment")}</span><strong>{t("quick.equipped", { count: preview.profile.equippedItems })}</strong><small>{t("quick.bags", { count: preview.profile.bagItems })}</small></div>
         <div><span><Cpu aria-hidden="true" size={15} />{t("quick.cpu")}</span><strong>{t("quick." + draft.cpuPreset)}</strong><small>{t("quick.threads", { threads: preview.threads, workers: preview.profilesetWorkThreads })}</small></div>
       </div>
+      <details className="input-compatibility">
+        <summary>{t("quick.inputCompatibility.title")}</summary>
+        <p>{t("quick.inputCompatibility.body")}</p>
+        <ul>
+          <li>{t("quick.inputCompatibility.supported", { count: preview.profile.inputCompatibility.supportedEditable })}</li>
+          <li>{t("quick.inputCompatibility.preserved", { count: preview.profile.inputCompatibility.preservedNotEditable })}</li>
+          <li>{t("quick.inputCompatibility.blocked", { count: preview.profile.inputCompatibility.executionBlocked })}</li>
+        </ul>
+        {preview.profile.inputCompatibility.diagnostics.length ? <ul className="compatibility-diagnostics">{preview.profile.inputCompatibility.diagnostics.map((diagnostic) => <li key={`${diagnostic.line}-${diagnostic.key ?? "line"}`}><code>{t("quick.inputCompatibility.line", { line: diagnostic.line })}{diagnostic.key ? ` · ${diagnostic.key}` : ""}</code> — {t(`quick.inputCompatibility.reasons.${diagnostic.category}`)}</li>)}</ul> : null}
+      </details>
       <div className="quick-grid">
         <section className="settings-form" aria-labelledby="quick-settings-heading">
           <h2 id="quick-settings-heading">{t("quick.settings")}</h2>

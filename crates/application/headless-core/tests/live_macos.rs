@@ -40,6 +40,11 @@ fn addon_and_simc_file_run_to_normalized_immutable_artifacts() {
     for (name, format, expected_player) in [
         ("addon-warrior", InputFormat::AddonExport, "PhaseOneAddon"),
         ("file-warrior", InputFormat::SimcFile, "PhaseOneFile"),
+        (
+            "advanced-warrior",
+            InputFormat::SimcFile,
+            "Advanced Warrior",
+        ),
     ] {
         let source =
             fs::read_to_string(root.join(format!("test-data/fixtures/profiles/{name}.simc")))
@@ -63,6 +68,15 @@ fn addon_and_simc_file_run_to_normalized_immutable_artifacts() {
         assert!(directory.join("result.json").is_file());
         assert!(directory.join("report.html").is_file());
         assert!(directory.join("normalized.json").is_file());
+        assert_eq!(
+            fs::read(directory.join("source.simc")).unwrap(),
+            source.as_bytes()
+        );
+        assert!(
+            fs::read(directory.join("generated.simc"))
+                .unwrap()
+                .starts_with(source.as_bytes())
+        );
         assert!(
             fs::metadata(directory.join("manifest.json"))
                 .unwrap()

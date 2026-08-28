@@ -8,7 +8,8 @@ World of Warcraft Retail 캐릭터를 SimulationCraft로 분석하는 로컬 데
 
 ## 주요 기능
 
-- SimulationCraft addon 문자열과 `.simc` 파일 가져오기
+- 공식 SimulationCraft addon 문자열과 일반 `.simc` 파일 가져오기
+- 인식하지 못한 안전한 SimC 문법의 원문 보존과 입력 호환성 진단
 - 캐릭터별 마지막 입력 저장, 즐겨찾기와 직전 입력 복원
 - 캐릭터 분석 설정과 최종 `.simc` 입력 확인
 - 착용·가방 장비를 사용한 장비 최적화
@@ -36,6 +37,8 @@ Windows 지원 범위는 사용하는 공식 [SimulationCraft](https://www.simul
 4. 결과를 비교하고 필요한 원본 산출물을 export합니다.
 
 SimulationCraft는 앱에 포함되지 않습니다. 필요한 파일은 사용자의 동의를 받은 뒤 공식 서버에서 직접 다운로드하고 크기, SHA-256과 실행 파일 정보를 검증합니다. 새 버전이 있어도 강제로 설치하지 않습니다.
+
+Raidbots 전용 Original/Raw Input, report metadata와 `data.json` import는 지원하지 않습니다. Standard SimC directive는 원문에 보존되지만 include, remote import, output path, multi-actor와 profileset처럼 로컬 단일 캐릭터 실행 경계를 벗어나는 기능은 실행 전에 차단됩니다.
 
 ## 설치
 

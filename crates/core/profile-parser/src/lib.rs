@@ -1,4 +1,14 @@
-//! Strict parser for SimulationCraft AddOn exports and single-player `.simc` files.
+//! Lossless SimulationCraft document parsing and a typed single-player projection.
+
+mod document;
+mod policy;
+
+pub use document::{
+    DirectiveOperator, SimcDirective, SimcDocument, SimcLine, SimcLineKind, parse_document,
+};
+pub use policy::{
+    CompatibilityCategory, CompatibilityDiagnostic, CompatibilityReport, analyze_compatibility,
+};
 
 use std::{collections::BTreeMap, str::FromStr};
 
@@ -9,8 +19,8 @@ use simshredder_domain::{
 };
 use thiserror::Error;
 
-const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
-const MAX_LINE_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_LINE_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -42,23 +52,27 @@ struct ProfileDraft {
     bag_items: Vec<BagItem>,
     actions: Vec<ActionDirective>,
     simulation: SimulationOptions,
-    simulation_seen: BTreeMap<String, usize>,
 }
 
 pub fn parse_addon_export(input: &str) -> Result<Profile> {
-    parse(input, SourceKind::AddonExport)
+    let document = parse_document(input)?;
+    project_profile(&document, SourceKind::AddonExport)
 }
 
 pub fn parse_simc_file(input: &str) -> Result<Profile> {
-    parse(input, SourceKind::SimcFile)
+    let document = parse_document(input)?;
+    project_profile(&document, SourceKind::SimcFile)
 }
 
-fn parse(input: &str, source_kind: SourceKind) -> Result<Profile> {
-    if input.len() > MAX_INPUT_BYTES {
-        return Err(ParseError::InputTooLarge);
-    }
-    if input.as_bytes().contains(&0) {
-        return invalid(1, "NUL bytes are not allowed");
+pub fn project_profile(document: &SimcDocument, source_kind: SourceKind) -> Result<Profile> {
+    let compatibility = analyze_compatibility(document);
+    if let Some(blocker) = compatibility.first_blocker() {
+        let key = blocker
+            .key
+            .as_deref()
+            .map(|key| format!("{key}: "))
+            .unwrap_or_default();
+        return invalid(blocker.line, format!("{key}{}", blocker.reason));
     }
 
     let addon_pattern = Regex::new(r"^# SimC Addon (\S+)$").expect("constant regex");
@@ -75,12 +89,9 @@ fn parse(input: &str, source_kind: SourceKind) -> Result<Profile> {
     let mut pending_equipped_name = None;
     let mut pending_saved_loadout_name = None;
 
-    for (index, raw_line) in input.lines().enumerate() {
-        let line_number = index + 1;
-        let line = raw_line.trim_end_matches('\r').trim();
-        if line.len() > MAX_LINE_BYTES {
-            return invalid(line_number, "line exceeds the 16 KiB limit");
-        }
+    for document_line in &document.lines {
+        let line_number = document_line.number;
+        let line = document_line.raw.trim();
         if line.is_empty() {
             continue;
         }
@@ -152,10 +163,6 @@ fn parse(input: &str, source_kind: SourceKind) -> Result<Profile> {
         })?;
         let key = key.trim();
         let value = value.trim();
-        validate_key(key, line_number)?;
-        if is_forbidden_key(key) {
-            return invalid(line_number, format!("unsupported or unsafe option: {key}"));
-        }
         if let Some(class) = parse_class(key) {
             if draft.class.is_some() {
                 return invalid(line_number, "multiple player actors are unsupported");
@@ -165,9 +172,7 @@ fn parse(input: &str, source_kind: SourceKind) -> Result<Profile> {
         } else if let Some(slot) = parse_gear_slot(key) {
             let mut item = parse_item(slot, value, line_number)?;
             item.name = pending_equipped_name.take();
-            if draft.equipped.insert(slot, item).is_some() {
-                return invalid(line_number, format!("duplicate equipped slot: {key}"));
-            }
+            draft.equipped.insert(slot, item);
         } else if key == "level" {
             set_once(
                 &mut draft.level,
@@ -226,8 +231,6 @@ fn parse(input: &str, source_kind: SourceKind) -> Result<Profile> {
             });
         } else if is_scalar_option(key) {
             insert_unique(&mut draft.scalar_options, key, value, line_number)?;
-        } else {
-            return invalid(line_number, format!("unsupported option: {key}"));
         }
     }
 
@@ -321,7 +324,7 @@ fn validate_retail_metadata(version: &str, toc: u32) -> Result<()> {
     Ok(())
 }
 
-fn parse_class(key: &str) -> Option<CharacterClass> {
+pub(crate) fn parse_class(key: &str) -> Option<CharacterClass> {
     Some(match key {
         "deathknight" | "death_knight" => CharacterClass::DeathKnight,
         "demonhunter" | "demon_hunter" => CharacterClass::DemonHunter,
@@ -340,7 +343,7 @@ fn parse_class(key: &str) -> Option<CharacterClass> {
     })
 }
 
-fn parse_gear_slot(key: &str) -> Option<GearSlot> {
+pub(crate) fn parse_gear_slot(key: &str) -> Option<GearSlot> {
     Some(match key {
         "head" => GearSlot::Head,
         "neck" => GearSlot::Neck,
@@ -379,9 +382,7 @@ fn parse_item(slot: GearSlot, value: &str, line: usize) -> Result<Item> {
             line,
             message: format!("invalid item option: {part}"),
         })?;
-        if !is_item_option(key) {
-            return invalid(line, format!("unsupported item option: {key}"));
-        }
+        validate_key(key, line)?;
         let value = safe_option_value(value, line, key)?;
         if key == "id" {
             let parsed = parse_number::<u32>(&value, line, "item id")?;
@@ -406,26 +407,6 @@ fn parse_item(slot: GearSlot, value: &str, line: usize) -> Result<Item> {
         name: None,
         options,
     })
-}
-
-fn is_item_option(key: &str) -> bool {
-    matches!(
-        key,
-        "id" | "enchant"
-            | "embellishment"
-            | "enchant_id"
-            | "gem_id"
-            | "bonus_id"
-            | "gem_bonus_id"
-            | "crafted_stats"
-            | "crafting_quality"
-            | "drop_level"
-            | "content_tuning"
-            | "redirected_base_stats"
-            | "titan_disc_id"
-            | "context"
-            | "ilevel"
-    )
 }
 
 fn validate_item_name(value: &str, line: usize) -> Result<()> {
@@ -476,9 +457,6 @@ fn parse_simulation_option(
     value: &str,
     line: usize,
 ) -> Result<()> {
-    if draft.simulation_seen.insert(key.to_owned(), line).is_some() {
-        return invalid(line, format!("duplicate simulation option: {key}"));
-    }
     match key {
         "iterations" => {
             draft.simulation.iterations = bounded_number(value, line, key, 1, 10_000_000)?
@@ -501,10 +479,14 @@ fn parse_simulation_option(
             if !matches!(
                 value,
                 "Patchwerk"
+                    | "CastingPatchwerk"
                     | "HecticAddCleave"
                     | "DungeonSlice"
                     | "LightMovement"
                     | "HeavyMovement"
+                    | "HelterSkelter"
+                    | "CleaveAdd"
+                    | "Beastlord"
             ) {
                 return invalid(line, format!("unsupported fight_style: {value}"));
             }
@@ -518,14 +500,14 @@ fn parse_simulation_option(
     Ok(())
 }
 
-fn is_talent_key(key: &str) -> bool {
+pub(crate) fn is_talent_key(key: &str) -> bool {
     matches!(
         key,
         "talents" | "class_talents" | "spec_talents" | "hero_talents" | "omnium_talents"
     )
 }
 
-fn is_scalar_option(key: &str) -> bool {
+pub(crate) fn is_scalar_option(key: &str) -> bool {
     matches!(
         key,
         "position"
@@ -545,29 +527,6 @@ fn is_scalar_option(key: &str) -> bool {
     )
 }
 
-fn is_forbidden_key(key: &str) -> bool {
-    key == "ptr"
-        || key == "beta"
-        || key == "classic"
-        || key == "copy"
-        || key == "enemy"
-        || key == "json"
-        || key == "json2"
-        || key == "html"
-        || key == "output"
-        || key == "input"
-        || key == "path"
-        || key == "save"
-        || key.starts_with("save_")
-        || key.starts_with("profileset")
-        || key == "spell_query"
-        || key == "proxy"
-        || key == "apikey"
-        || key == "armory"
-        || key == "local_json"
-        || key == "offspec_talents"
-}
-
 fn parse_player_name(value: &str, line: usize) -> Result<String> {
     let value = if value.starts_with('"') || value.ends_with('"') {
         value
@@ -581,10 +540,10 @@ fn parse_player_name(value: &str, line: usize) -> Result<String> {
         value
     };
     if value.is_empty()
-        || value.len() > 64
-        || !value
+        || value.len() > 128
+        || value
             .chars()
-            .all(|character| character.is_alphanumeric() || matches!(character, '-' | '\''))
+            .any(|character| character.is_control() || matches!(character, '"' | '\\'))
     {
         return invalid(line, "player name contains unsupported characters");
     }
@@ -639,16 +598,13 @@ fn insert_unique(
     line: usize,
 ) -> Result<()> {
     let value = safe_option_value(value, line, key)?;
-    if target.insert(key.to_owned(), value).is_some() {
-        return invalid(line, format!("duplicate option: {key}"));
-    }
+    target.insert(key.to_owned(), value);
     Ok(())
 }
 
 fn set_once<T>(target: &mut Option<T>, value: T, line: usize, label: &str) -> Result<()> {
-    if target.replace(value).is_some() {
-        return invalid(line, format!("duplicate field: {label}"));
-    }
+    let _ = (line, label);
+    target.replace(value);
     Ok(())
 }
 
@@ -693,26 +649,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_output_and_channel_overrides() {
+    fn rejects_output_and_channel_overrides_at_execution_policy() {
         let base = "warrior=Test\nlevel=90\nrace=orc\nrole=attack\nspec=fury\n";
         for option in ["ptr=1", "json2=/tmp/out.json", "profileset.one=max_time=1"] {
             let error = parse_simc_file(&format!("{base}{option}\n")).unwrap_err();
-            assert!(error.to_string().contains("unsupported"));
+            assert!(
+                error.to_string().contains("controlled")
+                    || error.to_string().contains("unsupported")
+                    || error.to_string().contains("not executable")
+            );
         }
     }
 
     #[test]
-    fn rejects_multiple_actors_and_unknown_options() {
+    fn rejects_multiple_actors_but_preserves_unknown_options() {
         let error = parse_simc_file(
             "warrior=One\nwarrior=Two\nlevel=90\nrace=orc\nrole=attack\nspec=fury\n",
         )
         .unwrap_err();
         assert!(error.to_string().contains("multiple player actors"));
 
-        let error =
-            parse_simc_file("warrior=One\nlevel=90\nrace=orc\nrole=attack\nspec=fury\nunknown=1\n")
-                .unwrap_err();
-        assert!(error.to_string().contains("unsupported option"));
+        let source = "warrior=One\nlevel=90\nrace=orc\nrole=attack\nspec=fury\nunknown=1\n";
+        assert!(parse_simc_file(source).is_ok());
+        let report = analyze_compatibility(&parse_document(source).unwrap());
+        assert_eq!(report.preserved_not_editable, 1);
     }
 
     #[test]
@@ -729,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_raidbots_dps_role_aliases() {
+    fn accepts_simc_dps_role_aliases() {
         for role in ["melee", "spell", "hybrid", "dps"] {
             let profile = parse_simc_file(&format!(
                 "rogue=Character\nlevel=90\nrace=void_elf\nregion=kr\nserver=azshara\nrole={role}\nspec=subtlety\ntalents=CUQAAAAAAAA\nhead=,id=250006,bonus_id=6652/12667,context=35\nshoulder=,id=250004,context=35\n"
@@ -742,9 +702,9 @@ mod tests {
     }
 
     #[test]
-    fn preserves_raidbots_item_names_and_saved_talent_loadouts() {
+    fn projects_official_addon_item_comments_and_saved_talent_loadouts() {
         let profile = parse_simc_file(
-            "# Raidbots-generated SimC input\nrogue=Character\nlevel=90\nrace=void_elf\nrole=melee\nspec=subtlety\ntalents=ACTIVE\n\n# Saved Loadout: Dungeon\n# talents=SAVED\n\n# Masquerade of the Grim Jest (289)\nhead=,id=250006,context=35\n",
+            "rogue=Character\nlevel=90\nrace=void_elf\nrole=melee\nspec=subtlety\ntalents=ACTIVE\n\n# Saved Loadout: Dungeon\n# talents=SAVED\n\n# Masquerade of the Grim Jest (289)\nhead=,id=250006,context=35\n",
         )
         .unwrap();
         assert_eq!(
@@ -802,5 +762,17 @@ mod tests {
                 format!("warrior=One\nlevel=90\nrace=orc\nrole=attack\nspec=fury\n{directive}\n");
             assert!(parse_simc_file(&source).is_err());
         }
+    }
+
+    #[test]
+    fn applies_sequential_last_value_semantics_to_typed_projection() {
+        let profile = parse_simc_file(
+            "warrior=One\nlevel=80\nlevel=90\nrace=orc\nrole=attack\nspec=fury\niterations=100\niterations=200\ntalents=OLD\ntalents=NEW\nhead=,id=1\nhead=,id=2\n",
+        )
+        .unwrap();
+        assert_eq!(profile.level, 90);
+        assert_eq!(profile.simulation.iterations, 200);
+        assert_eq!(profile.talents["talents"], "NEW");
+        assert_eq!(profile.equipped[&GearSlot::Head].id, 2);
     }
 }

@@ -92,6 +92,85 @@ pub fn build_input(profile: &Profile) -> Result<Vec<u8>> {
     Ok(output.into_bytes())
 }
 
+/// Preserves the imported document exactly and appends only deterministic
+/// SimShredder-owned overrides. SimulationCraft applies these directives in
+/// sequence, so the overlay changes the selected run without rewriting source.
+pub fn build_input_overlay(source: &str, original: &Profile, profile: &Profile) -> Result<Vec<u8>> {
+    validate_profile(profile)?;
+    if original.class != profile.class
+        || original.name != profile.name
+        || original.level != profile.level
+        || original.race != profile.race
+        || original.region != profile.region
+        || original.server != profile.server
+        || original.role != profile.role
+        || original.specialization != profile.specialization
+    {
+        return invalid("actor identity cannot be changed by a run overlay");
+    }
+
+    let mut output = source.to_owned();
+    if !output.is_empty() && !output.ends_with('\n') && !output.ends_with('\r') {
+        output.push('\n');
+    }
+    output.push_str("\n# SimShredder deterministic run overlay\n");
+
+    for (key, value) in &profile.scalar_options {
+        if original.scalar_options.get(key) != Some(value) {
+            writeln!(output, "{key}={value}").expect("String writes cannot fail");
+        }
+    }
+    for (key, value) in &profile.talents {
+        if original.talents.get(key) != Some(value) {
+            writeln!(output, "{key}={value}").expect("String writes cannot fail");
+        }
+    }
+    for (slot, item) in &profile.equipped {
+        if original.equipped.get(slot) != Some(item) {
+            write_item(&mut output, item);
+        }
+    }
+    if original.actions != profile.actions {
+        for action in &profile.actions {
+            writeln!(output, "{}={}", action.key, action.value).expect("String writes cannot fail");
+        }
+    }
+
+    writeln!(output, "iterations={}", profile.simulation.iterations)
+        .expect("String writes cannot fail");
+    writeln!(
+        output,
+        "fixed_time={}",
+        u8::from(profile.simulation.fixed_time)
+    )
+    .expect("String writes cannot fail");
+    writeln!(output, "max_time={}", profile.simulation.max_time_seconds)
+        .expect("String writes cannot fail");
+    writeln!(
+        output,
+        "vary_combat_length={}",
+        profile.simulation.vary_combat_length
+    )
+    .expect("String writes cannot fail");
+    writeln!(
+        output,
+        "desired_targets={}",
+        profile.simulation.desired_targets
+    )
+    .expect("String writes cannot fail");
+    writeln!(output, "fight_style={}", profile.simulation.fight_style)
+        .expect("String writes cannot fail");
+    writeln!(output, "threads={}", profile.simulation.threads).expect("String writes cannot fail");
+    writeln!(output, "seed={}", profile.simulation.seed).expect("String writes cannot fail");
+    writeln!(
+        output,
+        "report_details={}",
+        u8::from(profile.simulation.report_details)
+    )
+    .expect("String writes cannot fail");
+    Ok(output.into_bytes())
+}
+
 fn write_item(output: &mut String, item: &Item) {
     write!(output, "{}=,id={}", item.slot.simc_token(), item.id)
         .expect("String writes cannot fail");
@@ -103,11 +182,11 @@ fn write_item(output: &mut String, item: &Item) {
 
 fn validate_profile(profile: &Profile) -> Result<()> {
     if profile.name.is_empty()
-        || profile.name.len() > 64
-        || !profile
+        || profile.name.len() > 128
+        || profile
             .name
             .chars()
-            .all(|character| character.is_alphanumeric() || matches!(character, '-' | '\''))
+            .any(|character| character.is_control() || matches!(character, '"' | '\\'))
     {
         return invalid("player name is unsafe");
     }
@@ -143,7 +222,15 @@ fn validate_profile(profile: &Profile) -> Result<()> {
     }
     if !matches!(
         simulation.fight_style.as_str(),
-        "Patchwerk" | "HecticAddCleave" | "DungeonSlice" | "LightMovement" | "HeavyMovement"
+        "Patchwerk"
+            | "CastingPatchwerk"
+            | "HecticAddCleave"
+            | "DungeonSlice"
+            | "LightMovement"
+            | "HeavyMovement"
+            | "HelterSkelter"
+            | "CleaveAdd"
+            | "Beastlord"
     ) {
         return invalid("fight_style is unsupported");
     }
@@ -244,24 +331,15 @@ fn validate_profile(profile: &Profile) -> Result<()> {
 
 fn validate_item(item: &Item) -> Result<()> {
     for (key, value) in &item.options {
-        if !matches!(
-            key.as_str(),
-            "enchant_id"
-                | "enchant"
-                | "embellishment"
-                | "gem_id"
-                | "bonus_id"
-                | "gem_bonus_id"
-                | "crafted_stats"
-                | "crafting_quality"
-                | "drop_level"
-                | "content_tuning"
-                | "redirected_base_stats"
-                | "titan_disc_id"
-                | "context"
-                | "ilevel"
-        ) {
-            return invalid(format!("unsupported item option: {key}"));
+        if key.is_empty()
+            || key.len() > 128
+            || !key.chars().all(|character| {
+                character.is_ascii_lowercase()
+                    || character.is_ascii_digit()
+                    || matches!(character, '_' | '.')
+            })
+        {
+            return invalid(format!("unsafe item option: {key}"));
         }
         validate_value(key, value)?;
     }
@@ -314,6 +392,25 @@ mod tests {
             build_input(&profile).unwrap(),
             build_input(&profile).unwrap()
         );
+    }
+
+    #[test]
+    fn overlay_keeps_source_exact_and_emits_only_changed_owned_fields() {
+        let source = "# 유니코드\r\nwarrior=\"Stable Name\"\r\nlevel=90\r\nrace=orc\r\nrole=attack\r\nspec=fury\r\nunknown_future=1";
+        let original = parse_simc_file(source).unwrap();
+        let mut changed = original.clone();
+        changed.simulation.iterations = 4321;
+        changed
+            .scalar_options
+            .insert("optimal_raid".into(), "0".into());
+        let first = build_input_overlay(source, &original, &changed).unwrap();
+        let second = build_input_overlay(source, &original, &changed).unwrap();
+        assert_eq!(first, second);
+        assert!(first.starts_with(source.as_bytes()));
+        let generated = String::from_utf8(first).unwrap();
+        assert!(generated.contains("\noptimal_raid=0\n"));
+        assert!(generated.contains("\niterations=4321\n"));
+        assert_eq!(generated.matches("unknown_future=1").count(), 1);
     }
 
     #[test]
