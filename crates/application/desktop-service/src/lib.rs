@@ -386,6 +386,95 @@ impl DesktopService {
         })
     }
 
+    pub fn recent_jobs(&self) -> Result<Vec<JobView>> {
+        let queue = self.queue()?;
+        queue
+            .database()
+            .recent_jobs(200)?
+            .into_iter()
+            .map(|snapshot| {
+                let attempts = queue
+                    .database()
+                    .attempts_for_job(snapshot.id)?
+                    .into_iter()
+                    .map(attempt_view)
+                    .collect();
+                Ok(JobView {
+                    id: snapshot.id,
+                    state: snapshot.state.as_str().into(),
+                    cancel_requested: snapshot.cancel_requested,
+                    failure: snapshot.failure,
+                    succeeded_batches: snapshot.succeeded_batches,
+                    pending_batches: snapshot.pending_batches,
+                    attempts,
+                })
+            })
+            .collect()
+    }
+
+    pub fn delete_job(&self, job_id: i64) -> Result<()> {
+        self.delete_jobs(&[job_id])
+    }
+
+    fn delete_jobs(&self, job_ids: &[i64]) -> Result<()> {
+        let mut queue = self.queue()?;
+        let externally_referenced = queue
+            .database()
+            .artifact_directories_excluding_jobs(job_ids)?;
+        let mut planned = Vec::new();
+        for job_id in job_ids {
+            let source = self.run_root.join(format!("job-{job_id}"));
+            match fs::symlink_metadata(&source) {
+                Ok(metadata) => {
+                    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+                        return Err(Error::InvalidRequest(format!(
+                            "job {job_id} artifact root is not a regular directory"
+                        )));
+                    }
+                    if externally_referenced
+                        .iter()
+                        .any(|path| path.starts_with(&source))
+                    {
+                        continue;
+                    }
+                    let tombstone = self
+                        .run_root
+                        .join(format!(".deleted-job-{job_id}-{}", std::process::id()));
+                    if fs::symlink_metadata(&tombstone).is_ok() {
+                        return Err(Error::InvalidRequest(format!(
+                            "job {job_id} deletion is already staged"
+                        )));
+                    }
+                    planned.push((source, tombstone));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        let mut moved = Vec::new();
+        for (source, tombstone) in planned {
+            if let Err(error) = fs::rename(&source, &tombstone) {
+                for (restored_source, restored_tombstone) in moved.iter().rev() {
+                    let _ = fs::rename(restored_tombstone, restored_source);
+                }
+                return Err(error.into());
+            }
+            moved.push((source, tombstone));
+        }
+
+        if let Err(error) = queue.database_mut().delete_terminal_jobs(job_ids) {
+            for (source, tombstone) in moved.iter().rev() {
+                let _ = fs::rename(tombstone, source);
+            }
+            return Err(error.into());
+        }
+        for (_, tombstone) in moved {
+            let _ = fs::remove_dir_all(tombstone);
+        }
+        Ok(())
+    }
+
     pub fn result(&self, job_id: i64) -> Result<QuickResultView> {
         let queue = self.queue()?;
         let audit = queue.audit_job_artifacts(job_id)?;
@@ -901,6 +990,8 @@ fn protect_file(_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use simshredder_domain::SourceKind;
+    use simshredder_storage::{CpuPreset as StorageCpuPreset, NewBatch, NewJob};
 
     fn request() -> QuickSimRequest {
         QuickSimRequest {
@@ -917,6 +1008,53 @@ mod tests {
             cpu_preset: CpuChoice::Balanced,
             analysis: AnalysisOptions::default(),
         }
+    }
+
+    #[test]
+    fn deleting_a_terminal_job_removes_its_record_and_unshared_run_directory() {
+        let temporary = tempfile::tempdir().unwrap();
+        let service = DesktopService::open(temporary.path()).unwrap();
+        let mut queue = service.queue().unwrap();
+        let database = queue.database_mut();
+        let profile_id = database
+            .insert_profile(SourceKind::SimcFile, b"source", b"generated", "{}")
+            .unwrap();
+        let job_id = database
+            .enqueue_job(
+                &NewJob {
+                    profile_id,
+                    cpu_preset: StorageCpuPreset::Balanced,
+                    executable_path: PathBuf::from("/tmp/simc"),
+                    runtime_revision: "revision".into(),
+                    executable_sha256: "a".repeat(64),
+                    simc_version: "1210-01".into(),
+                    game_version: "12.1.0.1".into(),
+                    normalized_schema_version: 1,
+                    rule_revision: "quick-v1".into(),
+                    timeout_millis: 60_000,
+                },
+                &[NewBatch {
+                    source_kind: SourceKind::SimcFile,
+                    source_bytes: b"source".to_vec(),
+                    generated_bytes: b"generated".to_vec(),
+                    generated_sha256: "b".repeat(64),
+                    cache_key: "c".repeat(64),
+                }],
+            )
+            .unwrap();
+        let attempt = database.claim_next_attempt().unwrap().unwrap();
+        let artifact = service
+            .run_root
+            .join(format!("job-{job_id}/batch-0/attempt-1"));
+        fs::create_dir_all(&artifact).unwrap();
+        database
+            .complete_attempt(attempt.attempt_id, &artifact, &"d".repeat(64), false)
+            .unwrap();
+        drop(queue);
+
+        service.delete_job(job_id).unwrap();
+        assert!(service.recent_jobs().unwrap().is_empty());
+        assert!(!service.run_root.join(format!("job-{job_id}")).exists());
     }
 
     #[test]

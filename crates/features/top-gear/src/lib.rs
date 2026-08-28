@@ -355,6 +355,7 @@ pub fn generate_loadouts(rules: &RuleManifest, request: &SearchRequest) -> Resul
 
     let mut valid_combinations = 0_u64;
     let mut loadouts = Vec::new();
+    let mut seen_symmetric_loadouts = BTreeSet::new();
     let mut rejections = RejectionBreakdown {
         dominated_variants: dominated_variants as u64,
         ..RejectionBreakdown::default()
@@ -367,6 +368,7 @@ pub fn generate_loadouts(rules: &RuleManifest, request: &SearchRequest) -> Resul
         &mut BTreeMap::new(),
         &mut valid_combinations,
         &mut loadouts,
+        &mut seen_symmetric_loadouts,
         &mut rejections,
     )?;
     loadouts.sort_by(|left, right| left.key.cmp(&right.key));
@@ -390,14 +392,13 @@ fn enumerate(
     selected: &mut BTreeMap<GearSlot, ItemVariant>,
     valid_count: &mut u64,
     output: &mut Vec<Loadout>,
+    seen_symmetric_loadouts: &mut BTreeSet<String>,
     rejections: &mut RejectionBreakdown,
 ) -> Result<()> {
     if index == slots.len() {
         match make_loadout(rules, request, selected)? {
             Ok(base_loadout) => {
-                if base_loadout.changed_slots == 0
-                    || is_canonical_symmetric_selection(&base_loadout.items)
-                {
+                if seen_symmetric_loadouts.insert(base_loadout.key.clone()) {
                     for talent in request
                         .talent_candidates
                         .iter()
@@ -469,6 +470,7 @@ fn enumerate(
             selected,
             valid_count,
             output,
+            seen_symmetric_loadouts,
             rejections,
         )?;
     }
@@ -482,6 +484,11 @@ fn make_loadout(
     selected: &BTreeMap<GearSlot, ItemVariant>,
 ) -> Result<std::result::Result<Loadout, RejectionReason>> {
     let is_worn_baseline = selected.values().all(|item| !item.changed);
+    if symmetric_pair_reuses_owned_item(selected, GearSlot::Finger1, GearSlot::Finger2)
+        || symmetric_pair_reuses_owned_item(selected, GearSlot::Trinket1, GearSlot::Trinket2)
+    {
+        return Ok(Err(RejectionReason::UniqueEquipped));
+    }
     let mut unique = BTreeSet::new();
     let mut embellishments = 0_u8;
     let mut cost = CostVector::new();
@@ -548,6 +555,17 @@ fn make_loadout(
             })?,
         profile_options: BTreeMap::new(),
     }))
+}
+
+fn symmetric_pair_reuses_owned_item(
+    selected: &BTreeMap<GearSlot, ItemVariant>,
+    left: GearSlot,
+    right: GearSlot,
+) -> bool {
+    matches!(
+        (selected.get(&left), selected.get(&right)),
+        (Some(left), Some(right)) if left.key == right.key
+    )
 }
 
 fn bounded_option_combinations(
@@ -934,20 +952,6 @@ fn canonical_selection_key(items: &BTreeMap<GearSlot, ItemVariant>) -> String {
         .map(|(slot, key)| format!("{slot}:{key}"))
         .collect::<Vec<_>>()
         .join("|")
-}
-
-fn is_canonical_symmetric_selection(items: &BTreeMap<GearSlot, ItemVariant>) -> bool {
-    [
-        (GearSlot::Finger1, GearSlot::Finger2),
-        (GearSlot::Trinket1, GearSlot::Trinket2),
-    ]
-    .into_iter()
-    .all(
-        |(left, right)| match (items.get(&left), items.get(&right)) {
-            (Some(left), Some(right)) => left.key <= right.key,
-            _ => true,
-        },
-    )
 }
 
 fn symmetry_group(slot: GearSlot) -> &'static str {
@@ -1546,7 +1550,7 @@ mod tests {
     }
 
     #[test]
-    fn removes_symmetric_ring_permutations_and_reports_exact_counts() {
+    fn rejects_reusing_one_owned_ring_and_removes_slot_permutations() {
         let a = variant("a", GearSlot::Finger1, 0);
         let b = variant("b", GearSlot::Finger1, 0);
         let mut candidates = BTreeMap::new();
@@ -1566,8 +1570,9 @@ mod tests {
         );
         let preview = generate_loadouts(&rules(), &request(candidates)).unwrap();
         assert_eq!(preview.raw_combinations, 4);
-        assert_eq!(preview.valid_combinations, 3);
-        assert_eq!(preview.emitted_combinations, 3);
+        assert_eq!(preview.valid_combinations, 1);
+        assert_eq!(preview.emitted_combinations, 1);
+        assert_eq!(preview.rejections.unique_equipped, 2);
         assert_eq!(preview.rejections.symmetric_duplicate, 1);
     }
 

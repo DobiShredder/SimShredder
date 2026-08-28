@@ -232,24 +232,30 @@ fn manifest_from_catalog(
 
 fn cached_available_manifest(manager: &RuntimeManager) -> Result<RuntimeManifest, String> {
     let context = catalog_context()?;
-    let catalog = match manager.accepted_catalog(&context.roots, context.now) {
-        Ok(Some(catalog)) => catalog,
-        Ok(None) => manager
-            .verify_and_accept_catalog_for_target(
-                include_bytes!("../resources/runtime-catalog.json"),
-                &context.roots,
-                context.now,
-                context.target.0,
-                context.target.1,
-            )
-            .map_err(|error| format!("bundled runtime catalog was rejected: {error}"))?,
-        Err(error) => return Err(format!("cached runtime catalog was rejected: {error}")),
-    };
+    let catalog = manager
+        .verify_and_accept_catalog_or_current_for_target(
+            include_bytes!("../resources/runtime-catalog.json"),
+            &context.roots,
+            context.now,
+            context.target.0,
+            context.target.1,
+        )
+        .map_err(|error| format!("bundled or cached runtime catalog was rejected: {error}"))?;
     manifest_from_catalog(catalog, context.target)
 }
 
 fn refreshed_available_manifest(manager: &RuntimeManager) -> Result<RuntimeManifest, String> {
     let context = catalog_context()?;
+
+    let baseline = manager
+        .verify_and_accept_catalog_or_current_for_target(
+            include_bytes!("../resources/runtime-catalog.json"),
+            &context.roots,
+            context.now,
+            context.target.0,
+            context.target.1,
+        )
+        .map_err(|error| format!("bundled or cached runtime catalog was rejected: {error}"))?;
 
     let catalog = match download_production_catalog().and_then(|bytes| {
         manager.verify_and_accept_catalog_for_target(
@@ -261,21 +267,7 @@ fn refreshed_available_manifest(manager: &RuntimeManager) -> Result<RuntimeManif
         )
     }) {
         Ok(catalog) => catalog,
-        Err(_) => match manager.accepted_catalog(&context.roots, context.now) {
-            Ok(Some(catalog)) => catalog,
-            Ok(None) => manager
-                .verify_and_accept_catalog_for_target(
-                    include_bytes!("../resources/runtime-catalog.json"),
-                    &context.roots,
-                    context.now,
-                    context.target.0,
-                    context.target.1,
-                )
-                .map_err(|error| format!("bundled runtime catalog was rejected: {error}"))?,
-            Err(error) => {
-                return Err(format!("cached runtime catalog was rejected: {error}"));
-            }
-        },
+        Err(_) => baseline,
     };
     manifest_from_catalog(catalog, context.target)
 }
@@ -556,6 +548,17 @@ async fn character_profile_set_favorite(
 }
 
 #[tauri::command]
+async fn character_profile_delete(app: tauri::AppHandle, profile_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        desktop_service(&app)?
+            .delete_character_profile(&profile_id)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("character profile delete task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn character_profile_reload_armory(
     app: tauri::AppHandle,
     profile_id: String,
@@ -689,6 +692,28 @@ async fn quick_recover(app: tauri::AppHandle) -> Result<Vec<i64>, String> {
         spawn_dispatch(&app, service.clone(), *job_id, CancellationToken::default())?;
     }
     Ok(jobs)
+}
+
+#[tauri::command]
+async fn quick_jobs(app: tauri::AppHandle) -> Result<Vec<JobView>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        desktop_service(&app)?
+            .recent_jobs()
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("job history task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn quick_delete(app: tauri::AppHandle, job_id: i64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        desktop_service(&app)?
+            .delete_job(job_id)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("job deletion task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -853,6 +878,17 @@ async fn top_gear_sessions(app: tauri::AppHandle) -> Result<Vec<TopGearSessionVi
     .map_err(|error| format!("Top Gear session recovery failed: {error}"))?
 }
 
+#[tauri::command]
+async fn top_gear_delete(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        desktop_service(&app)?
+            .delete_top_gear_session(&session_id)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Top Gear deletion task failed: {error}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -911,6 +947,7 @@ pub fn run() {
             character_profiles,
             character_profile_save_import,
             character_profile_set_favorite,
+            character_profile_delete,
             character_profile_reload_armory,
             character_profile_restore_previous,
             quick_prepare,
@@ -921,6 +958,8 @@ pub fn run() {
             quick_result,
             quick_export,
             quick_recover,
+            quick_jobs,
+            quick_delete,
             top_gear_prepare,
             top_gear_start,
             top_gear_status,
@@ -929,7 +968,8 @@ pub fn run() {
             top_gear_retry,
             top_gear_result,
             top_gear_export,
-            top_gear_sessions
+            top_gear_sessions,
+            top_gear_delete
         ])
         .run(tauri::generate_context!())
         .expect("failed to run SimShredder");

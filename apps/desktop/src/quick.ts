@@ -285,3 +285,11 @@ export function quickExport(jobId: number): Promise<ExportView> {
 export function quickRecover(): Promise<number[]> {
   return invoke("quick_recover");
 }
+
+export function quickJobs(): Promise<JobView[]> {
+  return invoke("quick_jobs");
+}
+
+export function quickDelete(jobId: number): Promise<void> {
+  return invoke("quick_delete", { jobId });
+}

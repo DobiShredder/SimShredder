@@ -29,7 +29,7 @@ fn both_supported_inputs_prepare_to_their_golden_bytes() {
             .expect("the imported document must be an exact generated-input prefix");
         assert_eq!(
             overlay,
-            b"\n# SimShredder deterministic run overlay\niterations=100\nfixed_time=1\nmax_time=20\nvary_combat_length=0\ndesired_targets=1\nfight_style=Patchwerk\nthreads=1\nseed=12345\nreport_details=1\n"
+            b"\n# SimShredder deterministic run overlay\nrole=attack\niterations=100\nfixed_time=1\nmax_time=20\nvary_combat_length=0\ndesired_targets=1\nfight_style=Patchwerk\nthreads=1\nseed=12345\nreport_details=1\n"
         );
     }
 }

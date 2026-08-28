@@ -123,6 +123,33 @@ impl super::RuntimeManager {
         )
     }
 
+    /// Accepts the offered catalog when it advances (or matches) the trusted
+    /// sequence, while retaining a valid newer catalog already accepted by an
+    /// older application run. This lets a newly installed application promote
+    /// its bundled catalog without weakening rollback protection.
+    pub fn verify_and_accept_catalog_or_current_for_target(
+        &self,
+        catalog_bytes: &[u8],
+        bundled_root_keys: &[TrustedCatalogKey],
+        now_unix_seconds: u64,
+        platform: &str,
+        architecture: &str,
+    ) -> Result<VerifiedCatalog> {
+        match self.verify_and_accept_catalog_for_target(
+            catalog_bytes,
+            bundled_root_keys,
+            now_unix_seconds,
+            platform,
+            architecture,
+        ) {
+            Ok(catalog) => Ok(catalog),
+            Err(error @ Error::CatalogRollback { .. }) => self
+                .accepted_catalog(bundled_root_keys, now_unix_seconds)?
+                .ok_or(error),
+            Err(error) => Err(error),
+        }
+    }
+
     fn verify_and_accept_catalog_inner(
         &self,
         catalog_bytes: &[u8],
@@ -878,6 +905,51 @@ mod tests {
             .unwrap();
         assert_eq!(cached.payload.sequence, 1);
         assert_eq!(cached.verified_by, vec![root.key_id]);
+    }
+
+    #[test]
+    fn bundled_catalog_promotes_an_older_cache_but_never_rolls_back_a_newer_cache() {
+        let temporary = tempfile::tempdir().unwrap();
+        let manager = super::super::RuntimeManager::open(temporary.path()).unwrap();
+        let (root_signing, root) = key(9, "release-2026-a");
+
+        manager
+            .verify_and_accept_catalog(
+                &signed(payload(1), &root.key_id, &root_signing),
+                std::slice::from_ref(&root),
+                NOW,
+            )
+            .unwrap();
+
+        let promoted = manager
+            .verify_and_accept_catalog_or_current_for_target(
+                &signed(payload(2), &root.key_id, &root_signing),
+                std::slice::from_ref(&root),
+                NOW,
+                "macos",
+                "aarch64",
+            )
+            .unwrap();
+        assert_eq!(promoted.payload.sequence, 2);
+
+        let retained = manager
+            .verify_and_accept_catalog_or_current_for_target(
+                &signed(payload(1), &root.key_id, &root_signing),
+                std::slice::from_ref(&root),
+                NOW,
+                "macos",
+                "aarch64",
+            )
+            .unwrap();
+        assert_eq!(retained.payload.sequence, 2);
+        assert_eq!(
+            manager
+                .catalog_trust_state()
+                .unwrap()
+                .unwrap()
+                .highest_sequence,
+            2
+        );
     }
 
     #[test]

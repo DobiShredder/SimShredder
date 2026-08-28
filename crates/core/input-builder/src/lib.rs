@@ -115,6 +115,11 @@ pub fn build_input_overlay(source: &str, original: &Profile, profile: &Profile) 
     }
     output.push_str("\n# SimShredder deterministic run overlay\n");
 
+    // Canonicalize accepted historical aliases such as `role=melee`. Current
+    // SimC accepts those inputs but can serialize the actor as `role=auto`,
+    // which makes the result contract ambiguous to downstream consumers.
+    writeln!(output, "role={}", profile.role.simc_token()).expect("String writes cannot fail");
+
     for (key, value) in &profile.scalar_options {
         if original.scalar_options.get(key) != Some(value) {
             writeln!(output, "{key}={value}").expect("String writes cannot fail");
@@ -410,7 +415,19 @@ mod tests {
         let generated = String::from_utf8(first).unwrap();
         assert!(generated.contains("\noptimal_raid=0\n"));
         assert!(generated.contains("\niterations=4321\n"));
+        assert!(generated.contains("\nrole=attack\n"));
         assert_eq!(generated.matches("unknown_future=1").count(), 1);
+    }
+
+    #[test]
+    fn overlay_canonicalizes_a_supported_dps_role_alias() {
+        let source = "rogue=Alias\nlevel=90\nrace=void_elf\nrole=melee\nspec=subtlety\n";
+        let profile = parse_simc_file(source).unwrap();
+        let generated =
+            String::from_utf8(build_input_overlay(source, &profile, &profile).unwrap()).unwrap();
+
+        assert!(generated.starts_with(source));
+        assert!(generated.contains("# SimShredder deterministic run overlay\nrole=attack\n"));
     }
 
     #[test]

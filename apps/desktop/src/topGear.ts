@@ -179,7 +179,7 @@ export function defaultTopGearRequest(quick: QuickSimRequest): TopGearRequest {
     currencyConfirmedAtUnixSeconds: Math.floor(Date.now() / 1000),
     ruleRevision: "12.1.0-69465-v1",
     gameBuild: 69465,
-    combinationLimit: 128,
+    combinationLimit: 1_024,
     lowIterations: 1_000,
     highIterations: 10_000,
     finalistCount: 8,
@@ -203,3 +203,4 @@ export const topGearResult = (sessionId: string): Promise<TopGearResultView> =>
 export const topGearExport = (sessionId: string): Promise<{ directory: string; fileCount: number }> =>
   invoke("top_gear_export", { sessionId });
 export const topGearSessions = (): Promise<TopGearSessionView[]> => invoke("top_gear_sessions");
+export const topGearDelete = (sessionId: string): Promise<void> => invoke("top_gear_delete", { sessionId });

@@ -1,28 +1,20 @@
-import { CircleStop, Download, Gem, Hammer, Lock, Play, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Unlock } from "lucide-react";
+import { Gem, Hammer, Lock, Play, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Unlock } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { QuickSimRequest } from "../quick";
 import { EntityTooltip, itemTooltipModel } from "../tooltips";
 import {
   defaultTopGearRequest,
-  topGearAdvance,
-  topGearCancel,
-  topGearExport,
   topGearPrepare,
-  topGearResult,
-  topGearRetry,
   topGearStart,
-  topGearStatus,
   type GearSlot,
   type ItemVariant,
   type ProfileOptionVariant,
   type PreparedTopGear,
   type TopGearRequest,
-  type TopGearResultView,
   type TopGearSessionView,
 } from "../topGear";
 
-const terminal = new Set(["failed", "canceled"]);
 type VariantDraft = {
   baseKey: string;
   gemIds: string;
@@ -58,20 +50,18 @@ const emptyVariant: VariantDraft = {
 };
 
 const slotOrder: GearSlot[] = ["head", "neck", "shoulders", "back", "chest", "wrists", "hands", "waist", "legs", "feet", "finger1", "finger2", "trinket1", "trinket2", "main_hand", "off_hand", "shirt", "tabard"];
+type CandidateSlot = Exclude<GearSlot, "finger1" | "finger2" | "trinket1" | "trinket2"> | "finger" | "trinket";
+const candidateSlotOrder: CandidateSlot[] = ["head", "neck", "shoulders", "back", "chest", "wrists", "hands", "waist", "legs", "feet", "finger", "trinket", "main_hand", "off_hand", "shirt", "tabard"];
+const candidateSlot = (slot: GearSlot): CandidateSlot => slot === "finger1" || slot === "finger2" ? "finger" : slot === "trinket1" || slot === "trinket2" ? "trinket" : slot;
+const memberSlots = (slot: CandidateSlot): GearSlot[] => slot === "finger" ? ["finger1", "finger2"] : slot === "trinket" ? ["trinket1", "trinket2"] : [slot];
 
-export function TopGearPage({ quick, initialSession, onSession, onImport }: { quick: QuickSimRequest | null; initialSession: TopGearSessionView | null; onSession: (session: TopGearSessionView) => void; onImport: () => void }) {
+export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimRequest | null; onStarted: (session: TopGearSessionView) => void; onImport: () => void }) {
   const { t } = useTranslation();
   const [request, setRequest] = useState<TopGearRequest | null>(() => quick ? defaultTopGearRequest(quick) : null);
   const [preview, setPreview] = useState<PreparedTopGear | null>(null);
-  const [session, setSession] = useState<TopGearSessionView | null>(initialSession);
-  const [result, setResult] = useState<TopGearResultView | null>(null);
   const [draft, setDraft] = useState<VariantDraft>(emptyVariant);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [exported, setExported] = useState<string | null>(null);
-  const [resultFilter, setResultFilter] = useState<"all" | "pareto" | "changed">("all");
-  const [resultSort, setResultSort] = useState<"rank" | "delta" | "cost">("rank");
-  const [compareKeys, setCompareKeys] = useState<string[]>([]);
   const [setName, setSetName] = useState("");
   const [setMinimum, setSetMinimum] = useState(2);
   const [optionKind, setOptionKind] = useState("food");
@@ -82,25 +72,14 @@ export function TopGearPage({ quick, initialSession, onSession, onImport }: { qu
   const [itemOptions, setItemOptions] = useState("");
 
   const variantsBySlot = useMemo(() => {
-    const groups = new Map<GearSlot, ItemVariant[]>();
-    for (const variant of request?.variants ?? []) groups.set(variant.slot, [...(groups.get(variant.slot) ?? []), variant]);
-    return slotOrder.flatMap((slot) => groups.has(slot) ? [[slot, groups.get(slot)!] as const] : []);
+    const groups = new Map<CandidateSlot, ItemVariant[]>();
+    for (const variant of request?.variants ?? []) {
+      const slot = candidateSlot(variant.slot);
+      groups.set(slot, [...(groups.get(slot) ?? []), variant]);
+    }
+    return candidateSlotOrder.flatMap((slot) => groups.has(slot) ? [[slot, groups.get(slot)!] as const] : []);
   }, [request?.variants]);
 
-  const visibleRanked = useMemo(() => {
-    const totalCost = (cost: Record<string, number>) => Object.values(cost).reduce((sum, amount) => sum + amount, 0);
-    return [...(result?.ranked ?? [])]
-      .filter((entry) => resultFilter === "all" || (resultFilter === "pareto" ? entry.paretoOptimal : entry.loadout.changedSlots > 0 || entry.loadout.changedOptions > 0))
-      .sort((left, right) => resultSort === "rank" ? left.rank - right.rank : resultSort === "delta" ? right.delta - left.delta : totalCost(left.loadout.cost) - totalCost(right.loadout.cost))
-      .slice(0, 256);
-  }, [result, resultFilter, resultSort]);
-  const compared = useMemo(() => (result?.ranked ?? []).filter((entry) => compareKeys.includes(entry.loadout.key)), [compareKeys, result]);
-  const bestResult = result?.ranked[0] ?? null;
-  const bestItems = bestResult
-    ? slotOrder.flatMap((slot) => bestResult.loadout.items[slot] ? [bestResult.loadout.items[slot]] : [])
-    : [];
-  const bestIsBaseline = Boolean(bestResult && result && (bestResult.loadout.key === result.baselineKey
-    || (bestResult.loadout.changedSlots === 0 && bestResult.loadout.changedOptions === 0)));
   const itemTooltip = (variant: ItemVariant) => itemTooltipModel({
     id: variant.sourceItemId,
     slot: variant.slot,
@@ -111,7 +90,7 @@ export function TopGearPage({ quick, initialSession, onSession, onImport }: { qu
     changed: variant.changed,
   }, {
     title: t("tooltip.itemTitle", { id: variant.sourceItemId }),
-    category: t("tooltip.itemCategory", { slot: t(`topGear.slot_${variant.slot}`) }),
+    category: t("tooltip.itemCategory", { slot: t(`topGear.slot_${candidateSlot(variant.slot)}`) }),
     itemLevel: t("tooltip.itemLevel"),
     rank: t("tooltip.rank"),
     gems: t("tooltip.gems"),
@@ -126,13 +105,6 @@ export function TopGearPage({ quick, initialSession, onSession, onImport }: { qu
     if (!quick) return;
     setRequest((current) => current?.quick.source === quick.source ? current : defaultTopGearRequest(quick));
   }, [quick]);
-
-  useEffect(() => setSession(initialSession), [initialSession]);
-
-  const recordSession = (next: TopGearSessionView) => {
-    setSession(next);
-    onSession(next);
-  };
 
   useEffect(() => {
     if (!request || preview || busy) return;
@@ -153,19 +125,6 @@ export function TopGearPage({ quick, initialSession, onSession, onImport }: { qu
       .finally(() => setBusy(false));
   }, [busy, preview, request]);
 
-  useEffect(() => {
-    if (!session || session.stage === "complete" || terminal.has(session.currentJob.state)) return;
-    const timer = window.setInterval(() => {
-      void topGearStatus(session.id).then(recordSession).catch((reason) => setError(String(reason)));
-    }, 600);
-    return () => window.clearInterval(timer);
-  }, [session]);
-
-  useEffect(() => {
-    if (session?.stage !== "complete" || result) return;
-    void topGearResult(session.id).then(setResult).catch((reason) => setError(String(reason)));
-  }, [result, session]);
-
   if (!quick || !request) {
     return <div className="page placeholder-page"><p className="eyebrow">{t("topGear.eyebrow")}</p><h1>{t("topGear.title")}</h1><p className="placeholder-description">{t("topGear.importFirst")}</p><button className="primary-button" type="button" onClick={onImport}>{t("quick.goImport")}</button></div>;
   }
@@ -178,9 +137,13 @@ export function TopGearPage({ quick, initialSession, onSession, onImport }: { qu
     setRequest({ ...request, variants: request.variants.map((variant) => variant.key === key ? { ...variant, enabled } : variant) });
     setPreview(null);
   };
-  const toggleSlotLock = (slot: GearSlot) => {
-    const locked = request.lockedSlots.includes(slot);
-    setRequest({ ...request, lockedSlots: locked ? request.lockedSlots.filter((entry) => entry !== slot) : [...request.lockedSlots, slot] });
+  const toggleSlotLock = (slot: CandidateSlot) => {
+    const members = memberSlots(slot);
+    const locked = members.every((member) => request.lockedSlots.includes(member));
+    const next = locked
+      ? request.lockedSlots.filter((entry) => !members.includes(entry))
+      : [...new Set([...request.lockedSlots, ...members])];
+    setRequest({ ...request, lockedSlots: next });
     setPreview(null);
   };
   const updateTalent = (key: string, enabled: boolean) => {
@@ -231,15 +194,16 @@ export function TopGearPage({ quick, initialSession, onSession, onImport }: { qu
   };
 
   const refresh = async () => {
-    setBusy(true); setError(null); setResult(null);
+    setBusy(true); setError(null);
     try { setPreview(await topGearPrepare(request)); } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
   };
   const start = async () => {
-    setBusy(true); setError(null); setResult(null);
+    setBusy(true); setError(null);
     try {
       const next = await topGearPrepare(request);
       setPreview(next);
-      recordSession(await topGearStart(request));
+      const started = await topGearStart(request);
+      onStarted(started);
     } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
   };
   const addVariant = () => {
@@ -293,27 +257,6 @@ export function TopGearPage({ quick, initialSession, onSession, onImport }: { qu
     setPreview(null);
     setDraft({ ...emptyVariant, baseKey: base.key });
   };
-  const sessionAction = async (kind: "cancel" | "retry") => {
-    if (!session) return;
-    setBusy(true); setError(null);
-    try { recordSession(kind === "cancel" ? await topGearCancel(session.id) : await topGearRetry(session.id)); }
-    catch (reason) { setError(String(reason)); } finally { setBusy(false); }
-  };
-  const advanceSession = async () => {
-    if (!session) return;
-    setBusy(true); setError(null);
-    try { recordSession(await topGearAdvance(session.id)); }
-    catch (reason) { setError(String(reason)); } finally { setBusy(false); }
-  };
-  const exportResult = async () => {
-    if (!result) return;
-    setBusy(true); setError(null);
-    try {
-      const exportedResult = await topGearExport(result.sessionId);
-      setExported(t("topGear.exported", { count: exportedResult.fileCount, path: exportedResult.directory }));
-    } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
-  };
-
   return (
     <div className="page top-gear-page">
       <p className="eyebrow">{t("topGear.eyebrow")}</p>
@@ -327,13 +270,13 @@ export function TopGearPage({ quick, initialSession, onSession, onImport }: { qu
       <section className="candidate-browser" id="optimizer-gear" aria-labelledby="candidate-heading">
         <div className="section-heading"><div><h2 id="candidate-heading">{t("topGear.candidateGear")}</h2><p>{t("topGear.candidateGearHelp")}</p></div><button className="text-button" type="button" onClick={resetSelections}><RotateCcw aria-hidden="true" size={15} />{t("topGear.resetSelections")}</button></div>
         <div className="slot-candidate-grid">{variantsBySlot.map(([slot, variants]) => {
-          const locked = request.lockedSlots.includes(slot);
+          const locked = memberSlots(slot).every((member) => request.lockedSlots.includes(member));
           return <article className="slot-candidate-card" key={slot}>
             <header><strong>{t(`topGear.slot_${slot}`)}</strong><button aria-label={t(locked ? "topGear.unlockSlot" : "topGear.lockSlot", { slot: t(`topGear.slot_${slot}`) })} className="icon-button" type="button" onClick={() => toggleSlotLock(slot)}>{locked ? <Lock aria-hidden="true" size={15} /> : <Unlock aria-hidden="true" size={15} />}</button></header>
             <ul>{variants.map((variant) => <li key={variant.key}><label className="candidate-check"><input checked={!variant.changed || (variant.enabled && !locked)} disabled={!variant.changed || locked} type="checkbox" onChange={(event) => updateCandidate(variant.key, event.target.checked)} /><span><strong>{variant.displayName ?? t("tooltip.itemTitle", { id: variant.sourceItemId })}</strong><small>{variant.changed ? t("topGear.candidate") : t("topGear.worn")} · {variant.simcOptions.ilevel ? t("topGear.itemLevelValue", { level: variant.simcOptions.ilevel }) : `ID ${variant.sourceItemId}`}</small></span></label></li>)}</ul>
           </article>;
         })}</div>
-        <details className="inline-disclosure"><summary>{t("topGear.addExactItem")}</summary><div className="exact-item-form"><label>{t("topGear.itemSlot")}<select value={itemSlot} onChange={(event) => setItemSlot(event.target.value as GearSlot)}>{slotOrder.filter((slot) => !["shirt", "tabard"].includes(slot)).map((slot) => <option key={slot} value={slot}>{t(`topGear.slot_${slot}`)}</option>)}</select></label><label>{t("topGear.itemId")}<input inputMode="numeric" value={itemId} onChange={(event) => setItemId(event.target.value)} /></label><label>{t("topGear.itemNameOptional")}<input value={itemName} onChange={(event) => setItemName(event.target.value)} /></label><label>{t("topGear.itemOptions")}<input placeholder="bonus_id=… , context=…" value={itemOptions} onChange={(event) => setItemOptions(event.target.value)} /></label><button className="secondary-button" disabled={!itemId} type="button" onClick={addExactItem}>{t("topGear.addItemCandidate")}</button></div><small>{t("topGear.itemSearchBoundary")}</small></details>
+        <details className="inline-disclosure"><summary>{t("topGear.addExactItem")}</summary><div className="exact-item-form"><label>{t("topGear.itemSlot")}<select value={itemSlot} onChange={(event) => setItemSlot(event.target.value as GearSlot)}>{slotOrder.filter((slot) => !["shirt", "tabard", "finger2", "trinket2"].includes(slot)).map((slot) => <option key={slot} value={slot}>{t(`topGear.slot_${candidateSlot(slot)}`)}</option>)}</select></label><label>{t("topGear.itemId")}<input inputMode="numeric" value={itemId} onChange={(event) => setItemId(event.target.value)} /></label><label>{t("topGear.itemNameOptional")}<input value={itemName} onChange={(event) => setItemName(event.target.value)} /></label><label>{t("topGear.itemOptions")}<input placeholder="bonus_id=… , context=…" value={itemOptions} onChange={(event) => setItemOptions(event.target.value)} /></label><button className="secondary-button" disabled={!itemId} type="button" onClick={addExactItem}>{t("topGear.addItemCandidate")}</button></div><small>{t("topGear.itemSearchBoundary")}</small></details>
       </section>
 
       <div className="top-gear-grid">
@@ -371,7 +314,7 @@ export function TopGearPage({ quick, initialSession, onSession, onImport }: { qu
 
         <section className="settings-form" aria-labelledby="precision-heading">
           <h2 id="precision-heading"><Sparkles aria-hidden="true" size={18} />{t("topGear.precision")}</h2>
-          <label>{t("topGear.limit")}<input min={1} max={256} type="number" value={request.combinationLimit} onChange={(event) => updateNumber("combinationLimit", Number(event.target.value))} /></label>
+          <label>{t("topGear.limit")}<input min={1} max={2048} type="number" value={request.combinationLimit} onChange={(event) => updateNumber("combinationLimit", Number(event.target.value))} /></label>
           <label>{t("topGear.lowIterations")}<input min={100} type="number" value={request.lowIterations} onChange={(event) => updateNumber("lowIterations", Number(event.target.value))} /></label>
           <label>{t("topGear.highIterations")}<input min={100} type="number" value={request.highIterations} onChange={(event) => updateNumber("highIterations", Number(event.target.value))} /></label>
           <label>{t("topGear.finalists")}<input min={1} max={256} type="number" value={request.finalistCount} onChange={(event) => updateNumber("finalistCount", Number(event.target.value))} /></label>
@@ -391,7 +334,7 @@ export function TopGearPage({ quick, initialSession, onSession, onImport }: { qu
       <section className="variant-builder" id="optimizer-enhancements" aria-labelledby="variant-heading">
         <div className="section-heading"><h2 id="variant-heading"><Hammer aria-hidden="true" size={18} />{t("topGear.virtualTitle")}</h2><p>{t("topGear.virtualBody")}</p></div>
         <div className="variant-form">
-          <label>{t("topGear.baseItem")}<select value={draft.baseKey} onChange={(event) => { const base = request.variants.find((variant) => variant.key === event.target.value); setDraft({ ...draft, baseKey: event.target.value, rank: base?.rank ?? 0, gemIds: base?.gemIds.join("/") ?? "", enchantId: base?.enchantId ? String(base.enchantId) : "", itemLevel: "" }); }}>{request.variants.map((variant) => <option key={variant.key} value={variant.key}>{t(`topGear.slot_${variant.slot}`)} · {variant.sourceItemId} · {variant.key}</option>)}</select></label>
+          <label>{t("topGear.baseItem")}<select value={draft.baseKey} onChange={(event) => { const base = request.variants.find((variant) => variant.key === event.target.value); setDraft({ ...draft, baseKey: event.target.value, rank: base?.rank ?? 0, gemIds: base?.gemIds.join("/") ?? "", enchantId: base?.enchantId ? String(base.enchantId) : "", itemLevel: "" }); }}>{request.variants.map((variant) => <option key={variant.key} value={variant.key}>{t(`topGear.slot_${candidateSlot(variant.slot)}`)} · {variant.sourceItemId} · {variant.key}</option>)}</select></label>
           <label><Gem aria-hidden="true" size={15} />{t("topGear.gems")}<input placeholder="213455/213456" value={draft.gemIds} onChange={(event) => setDraft({ ...draft, gemIds: event.target.value })} /></label>
           <label>{t("topGear.enchant")}<input inputMode="numeric" value={draft.enchantId} onChange={(event) => setDraft({ ...draft, enchantId: event.target.value })} /></label>
           <label>{t("topGear.rank")}<input min={0} type="number" value={draft.rank} onChange={(event) => setDraft({ ...draft, rank: Number(event.target.value) })} /></label>
@@ -407,29 +350,13 @@ export function TopGearPage({ quick, initialSession, onSession, onImport }: { qu
           <label className="check-line"><input checked={draft.catalyst} type="checkbox" onChange={(event) => setDraft({ ...draft, catalyst: event.target.checked })} />{t("topGear.usesCatalyst")}</label>
         </div>
         <button className="secondary-button" disabled={!draft.baseKey} type="button" onClick={addVariant}>{t("topGear.addVariant")}</button>
-        <ul className="variant-list">{request.variants.map((variant) => <li key={variant.key}><span className="variant-identity"><EntityTooltip model={itemTooltip(variant)} /><span>{t(`topGear.slot_${variant.slot}`)} · {variant.sourceItemId}</span></span><small>{variant.changed ? t("topGear.candidate") : t("topGear.worn")} · {variant.gemIds.length} {t("topGear.gemsShort")} · {variant.enchantId ?? "—"}</small>{variant.changed ? <button type="button" className="text-button" onClick={() => { setRequest({ ...request, variants: request.variants.filter((item) => item.key !== variant.key) }); setPreview(null); }}>{t("topGear.remove")}</button> : null}</li>)}</ul>
+        <ul className="variant-list">{request.variants.map((variant) => <li key={variant.key}><span className="variant-identity"><EntityTooltip model={itemTooltip(variant)} /><span>{t(`topGear.slot_${candidateSlot(variant.slot)}`)} · {variant.sourceItemId}</span></span><small>{variant.changed ? t("topGear.candidate") : t("topGear.worn")} · {variant.gemIds.length} {t("topGear.gemsShort")} · {variant.enchantId ?? "—"}</small>{variant.changed ? <button type="button" className="text-button" onClick={() => { setRequest({ ...request, variants: request.variants.filter((item) => item.key !== variant.key) }); setPreview(null); }}>{t("topGear.remove")}</button> : null}</li>)}</ul>
       </section>
 
       {preview ? <section className="preview-card" aria-live="polite"><h2>{t("topGear.preview")}</h2><div className="metric-grid"><article><span>{t("topGear.raw")}</span><strong>{preview.rawCombinations}</strong></article><article><span>{t("topGear.valid")}</span><strong>{preview.validCombinations}</strong></article><article><span>{t("topGear.executions")}</span><strong>{preview.executionCount}</strong></article><article><span>{t("topGear.rule")}</span><strong>{preview.ruleRevision}</strong></article></div><details className="rejection-details"><summary>{t("topGear.rejections")}</summary><ul>{Object.entries(preview.rejections).map(([reason, count]) => <li key={reason}><span>{t(`topGear.rejection_${reason}`)}</span><strong>{count}</strong></li>)}</ul></details>{preview.estimated ? <p className="status-warning"><span aria-hidden="true" />{t("topGear.estimated")}</p> : null}<p className="safe-note">{preview.ruleSource}</p></section> : null}
 
-      {session ? <section className="job-card" aria-live="polite"><div className="job-title"><div><span>{t("topGear.session", { id: session.id })}</span><strong>{t(`topGear.stage_${session.stage}`)}</strong></div><Sparkles aria-hidden="true" size={28} /></div><div className="progress-track" role="progressbar" aria-label={t("topGear.progress", { done: session.completedExecutions, total: session.totalExecutions })} aria-valuemin={0} aria-valuemax={session.totalExecutions} aria-valuenow={session.completedExecutions}><span style={{ width: `${session.totalExecutions ? session.completedExecutions / session.totalExecutions * 100 : 0}%` }} /></div><p className="muted">{t("topGear.progress", { done: session.completedExecutions, total: session.totalExecutions })}</p><div className="button-row">{["queued", "running"].includes(session.currentJob.state) ? <button className="secondary-button" disabled={busy} type="button" onClick={() => void sessionAction("cancel")}><CircleStop aria-hidden="true" size={18} />{t("jobsPage.cancel")}</button> : null}{["failed", "canceled", "interrupted"].includes(session.currentJob.state) ? <button className="secondary-button" disabled={busy} type="button" onClick={() => void sessionAction("retry")}><RotateCcw aria-hidden="true" size={18} />{t("jobsPage.retry")}</button> : null}{session.canAdvance ? <button className="primary-button" disabled={busy} type="button" onClick={() => void advanceSession()}>{t("topGear.continueStage")}</button> : null}</div></section> : null}
-
-      {bestResult ? <section className="top-gear-results best-loadout" aria-labelledby="best-loadout-heading">
-        <div className="best-loadout-heading">
-          <div><p className="eyebrow">{t("topGear.bestCombination")}</p><h2 id="best-loadout-heading">{t(bestIsBaseline ? "topGear.bestBaseline" : bestResult.equivalentToBaseline ? "topGear.bestSidegrade" : "topGear.bestUpgrade")}</h2></div>
-          <div className="best-loadout-metric"><strong>{bestResult.mean.toLocaleString(undefined, { maximumFractionDigits: 1 })}</strong><span>{t("topGear.dps")}</span></div>
-        </div>
-        <div className="best-loadout-stats"><span>{t("topGear.bestDelta", { delta: bestResult.delta.toLocaleString(undefined, { signDisplay: "always", maximumFractionDigits: 1 }) })}</span><span>{t("topGear.bestError", { error: bestResult.combinedError.toLocaleString(undefined, { maximumFractionDigits: 1 }) })}</span><span>{t("topGear.bestChanges", { gear: bestResult.loadout.changedSlots, options: bestResult.loadout.changedOptions })}</span></div>
-        {bestItems.length ? <ul className="best-loadout-items">{bestItems.map((item) => <li key={`${item.slot}-${item.key}`}><EntityTooltip model={itemTooltip(item)} /><span><strong>{item.displayName ?? t("tooltip.itemTitle", { id: item.sourceItemId })}</strong><small>{t(`topGear.slot_${item.slot}`)} · {item.simcOptions.ilevel ? t("topGear.itemLevelValue", { level: item.simcOptions.ilevel }) : `ID ${item.sourceItemId}`} · {item.changed ? t("topGear.candidate") : t("topGear.worn")}</small></span></li>)}</ul> : null}
-        <p className="safe-note">{t("topGear.bestInterpretation")}</p>
-      </section> : null}
-
-      {result ? <section className="top-gear-results"><h2>{t("topGear.results")}</h2><div className="result-controls"><label>{t("topGear.filter")}<select value={resultFilter} onChange={(event) => setResultFilter(event.target.value as typeof resultFilter)}><option value="all">{t("topGear.filterAll")}</option><option value="pareto">{t("topGear.filterPareto")}</option><option value="changed">{t("topGear.filterChanged")}</option></select></label><label>{t("topGear.sort")}<select value={resultSort} onChange={(event) => setResultSort(event.target.value as typeof resultSort)}><option value="rank">{t("topGear.sortRank")}</option><option value="delta">{t("topGear.sortDelta")}</option><option value="cost">{t("topGear.sortCost")}</option></select></label><small>{t("topGear.boundedRows", { count: visibleRanked.length })}</small></div><div className="table-scroll"><table><thead><tr><th>{t("topGear.compare")}</th><th>{t("topGear.rankLabel")}</th><th>{t("topGear.metric")}</th><th>{t("topGear.delta")}</th><th>{t("topGear.error")}</th><th>{t("topGear.cost")}</th><th>{t("topGear.flags")}</th></tr></thead><tbody>{visibleRanked.map((entry) => <tr key={entry.loadout.key}><td><input aria-label={t("topGear.compareRank", { rank: entry.rank })} checked={compareKeys.includes(entry.loadout.key)} disabled={!compareKeys.includes(entry.loadout.key) && compareKeys.length >= 2} type="checkbox" onChange={(event) => setCompareKeys(event.target.checked ? [...compareKeys, entry.loadout.key] : compareKeys.filter((key) => key !== entry.loadout.key))} /></td><td>{entry.rank}</td><td>{entry.mean.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td><td>{entry.delta.toLocaleString(undefined, { signDisplay: "always", maximumFractionDigits: 1 })}</td><td>±{entry.combinedError.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td><td>{Object.entries(entry.loadout.cost).map(([currency, amount]) => `${currency} ${amount}`).join(" · ") || "—"}</td><td>{[entry.equivalentToBaseline ? t("topGear.equivalent") : "", entry.paretoOptimal ? t("topGear.pareto") : ""].filter(Boolean).join(" · ")}</td></tr>)}</tbody></table></div>{compared.length === 2 ? <div className="comparison-card" role="status"><strong>{t("topGear.comparison")}</strong><span>{t("topGear.comparisonDelta", { first: compared[0].rank, second: compared[1].rank, delta: Math.abs(compared[0].mean - compared[1].mean).toLocaleString(undefined, { maximumFractionDigits: 1 }) })}</span></div> : null}</section> : null}
-      {result?.actionPlan.length ? <section className="top-gear-results"><h2>{t("topGear.actionPlan")}</h2><ol className="action-plan">{result.actionPlan.map((action) => <li key={action.id}><strong>{action.label}</strong><span>{t("topGear.marginal", { gain: action.marginalGain.toLocaleString(undefined, { maximumFractionDigits: 1 }), cumulative: action.cumulativeGain.toLocaleString(undefined, { maximumFractionDigits: 1 }) })}</span><small>{t("topGear.remaining", { currencies: Object.entries(action.remaining).map(([currency, amount]) => `${currency} ${amount}`).join(" · ") })}</small></li>)}</ol></section> : null}
-      {result ? <section className="generated-panel top-gear-final"><h2>{t("topGear.finalInput")}</h2><p>{t("topGear.identity", { simc: result.runtime.simc_version, revision: result.runtime.git_revision, build: result.runtime.game_build, rule: result.ruleRevision })}</p><p>{t("topGear.snapshot", { time: new Date(result.budget.confirmedAtUnixSeconds * 1000).toLocaleString() })}</p><pre tabIndex={0}>{result.finalGeneratedInput}</pre><button className="secondary-button" disabled={busy} type="button" onClick={() => void exportResult()}><Download aria-hidden="true" size={18} />{t("topGear.export")}</button>{exported ? <p role="status">{exported}</p> : null}</section> : null}
-
       {error ? <div className="inline-error" role="alert"><strong>{t("topGear.errorTitle")}</strong><code>{error}</code></div> : null}
-      {!session ? <div className="button-row quick-actions"><button className="secondary-button" disabled={busy} type="button" onClick={() => void refresh()}><RefreshCw aria-hidden="true" size={18} />{busy ? t("quick.refreshing") : t("quick.refresh")}</button><button className="primary-button" disabled={busy || !preview} type="button" onClick={() => void start()}><Play aria-hidden="true" size={18} />{busy ? t("quick.starting") : t("topGear.run")}</button></div> : null}
+      <div className="button-row quick-actions"><button className="secondary-button" disabled={busy} type="button" onClick={() => void refresh()}><RefreshCw aria-hidden="true" size={18} />{busy ? t("quick.refreshing") : t("quick.refresh")}</button><button className="primary-button" disabled={busy || !preview} type="button" onClick={() => void start()}><Play aria-hidden="true" size={18} />{busy ? t("quick.starting") : t("topGear.run")}</button></div>
     </div>
   );
 }

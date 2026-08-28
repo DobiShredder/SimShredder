@@ -21,7 +21,7 @@ use super::{
     prepare_request, read_regular,
 };
 
-const MAX_TOP_GEAR_COMBINATIONS: usize = 256;
+const MAX_TOP_GEAR_COMBINATIONS: usize = 2_048;
 const MIN_STAGE_ITERATIONS: u32 = 100;
 const MAX_STAGE_ITERATIONS: u32 = 10_000_000;
 
@@ -329,6 +329,32 @@ impl DesktopService {
         ids.into_iter()
             .map(|id| self.top_gear_status(&id))
             .collect()
+    }
+
+    pub fn delete_top_gear_session(&self, session_id: &str) -> Result<()> {
+        let session = self.read_top_gear_session(session_id)?;
+        let path = self.session_path(session_id)?;
+        let tombstone = path.with_extension(format!("json.deleted-{}", std::process::id()));
+        if fs::symlink_metadata(&tombstone).is_ok() {
+            return Err(Error::InvalidRequest(
+                "Top Gear session deletion is already staged".into(),
+            ));
+        }
+        fs::rename(&path, &tombstone)?;
+        let job_ids = [
+            Some(session.low_job_id),
+            session.high_job_id,
+            session.action_job_id,
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        if let Err(error) = self.delete_jobs(&job_ids) {
+            let _ = fs::rename(&tombstone, &path);
+            return Err(error);
+        }
+        fs::remove_file(tombstone)?;
+        Ok(())
     }
 
     pub fn advance_top_gear(
@@ -808,13 +834,45 @@ fn group_candidates(
 ) -> BTreeMap<simshredder_domain::GearSlot, Vec<ItemVariant>> {
     let mut grouped = BTreeMap::new();
     for variant in variants {
-        if !variant.enabled || (locked_slots.contains(&variant.slot) && variant.changed) {
+        if !variant.enabled {
             continue;
         }
-        grouped
-            .entry(variant.slot)
-            .or_insert_with(Vec::new)
-            .push(variant.clone());
+        let pooled_slots = match variant.slot {
+            simshredder_domain::GearSlot::Finger1 | simshredder_domain::GearSlot::Finger2
+                if variant.changed =>
+            {
+                Some([
+                    simshredder_domain::GearSlot::Finger1,
+                    simshredder_domain::GearSlot::Finger2,
+                ])
+            }
+            simshredder_domain::GearSlot::Trinket1 | simshredder_domain::GearSlot::Trinket2
+                if variant.changed =>
+            {
+                Some([
+                    simshredder_domain::GearSlot::Trinket1,
+                    simshredder_domain::GearSlot::Trinket2,
+                ])
+            }
+            _ => None,
+        };
+        let targets = pooled_slots
+            .map(|slots| slots.to_vec())
+            .unwrap_or_else(|| vec![variant.slot]);
+        for target in targets {
+            if locked_slots.contains(&target) && variant.changed {
+                continue;
+            }
+            let mut candidate = variant.clone();
+            candidate.slot = target;
+            for action in &mut candidate.actions {
+                action.slot = target;
+            }
+            grouped
+                .entry(target)
+                .or_insert_with(Vec::new)
+                .push(candidate);
+        }
     }
     grouped
 }
@@ -985,6 +1043,67 @@ mod tests {
         assert_eq!(preview.raw_combinations, 1);
         assert_eq!(preview.loadouts.len(), 1);
         assert_eq!(preview.loadouts[0].changed_slots, 0);
+    }
+
+    #[test]
+    fn one_bag_trinket_candidate_can_fill_either_trinket_position() {
+        let temporary = tempfile::tempdir().unwrap();
+        let service = DesktopService::open(temporary.path()).unwrap();
+        let mut request = request();
+        request.quick.source = "rogue=Character\nlevel=90\nrace=void_elf\nrole=melee\nspec=subtlety\ntrinket1=,id=1001\ntrinket2=,id=1002\n### Gear from Bags\n# Candidate Trinket (334)\n# trinket1=candidate_trinket,id=2001,ilevel=334\n".into();
+        request.variants.clear();
+        request.talent_loadouts.clear();
+        request.profile_options.clear();
+
+        let preview = service.prepare_top_gear(&request).unwrap();
+        assert_eq!(preview.raw_combinations, 4);
+        assert_eq!(preview.valid_combinations, 3);
+        assert_eq!(preview.rejections.unique_equipped, 1);
+
+        let pairs: BTreeSet<_> = preview
+            .loadouts
+            .iter()
+            .map(|loadout| {
+                let mut ids: Vec<_> = loadout
+                    .items
+                    .values()
+                    .map(|item| item.source_item_id)
+                    .collect();
+                ids.sort_unstable();
+                ids
+            })
+            .collect();
+        assert_eq!(
+            pairs,
+            BTreeSet::from([vec![1001, 1002], vec![1001, 2001], vec![1002, 2001]])
+        );
+    }
+
+    #[test]
+    fn twenty_nine_bag_trinkets_fit_the_default_complete_search_cap() {
+        let temporary = tempfile::tempdir().unwrap();
+        let service = DesktopService::open(temporary.path()).unwrap();
+        let mut request = request();
+        let mut source = "rogue=Character\nlevel=90\nrace=void_elf\nrole=melee\nspec=subtlety\ntrinket1=,id=1001\ntrinket2=,id=1002\n### Gear from Bags\n".to_owned();
+        for index in 0..29 {
+            source.push_str(&format!(
+                "# Candidate {index} (334)\n# trinket1=candidate_{index},id={},ilevel=334\n",
+                2001 + index
+            ));
+        }
+        request.quick.source = source;
+        request.variants.clear();
+        request.talent_loadouts.clear();
+        request.profile_options.clear();
+        request.combination_limit = 1_024;
+
+        let preview = service.prepare_top_gear(&request).unwrap();
+        assert_eq!(preview.raw_combinations, 900);
+        assert_eq!(preview.valid_combinations, 465);
+        assert_eq!(preview.loadouts.len(), 465);
+        assert_eq!(preview.rejections.unique_equipped, 29);
+        assert_eq!(preview.rejections.symmetric_duplicate, 406);
+        assert!(!preview.estimated);
     }
 
     #[test]

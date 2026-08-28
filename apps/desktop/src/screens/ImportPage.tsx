@@ -1,8 +1,9 @@
-import { FileInput, RefreshCw, RotateCcw, Star, Upload, UserRound } from "lucide-react";
+import { FileInput, RefreshCw, RotateCcw, Star, Trash2, Upload, UserRound } from "lucide-react";
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import { useTranslation } from "react-i18next";
 import {
   characterProfiles,
+  deleteCharacterProfile,
   reloadCharacterProfileFromArmory,
   restorePreviousCharacterProfileInput,
   saveCharacterProfileImport,
@@ -29,6 +30,7 @@ export function ImportPage({ onPrepared }: {
   const [profiles, setProfiles] = useState<CharacterProfile[]>([]);
   const [profilesError, setProfilesError] = useState<string | null>(null);
   const [selectedArmoryProfile, setSelectedArmoryProfile] = useState<CharacterProfile | null>(null);
+  const [selectedDeleteProfile, setSelectedDeleteProfile] = useState<CharacterProfile | null>(null);
   const [profileBusy, setProfileBusy] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -128,6 +130,20 @@ export function ImportPage({ onPrepared }: {
       setProfileBusy(null);
     }
   };
+  const deleteProfile = async () => {
+    if (!selectedDeleteProfile) return;
+    setProfileBusy(selectedDeleteProfile.id);
+    setProfilesError(null);
+    try {
+      await deleteCharacterProfile(selectedDeleteProfile.id);
+      setProfiles((current) => current.filter((profile) => profile.id !== selectedDeleteProfile.id));
+      setSelectedDeleteProfile(null);
+    } catch (reason) {
+      setProfilesError(String(reason));
+    } finally {
+      setProfileBusy(null);
+    }
+  };
 
   return (
     <div className="page import-page">
@@ -180,6 +196,9 @@ export function ImportPage({ onPrepared }: {
                       <RotateCcw aria-hidden="true" size={16} />{t("profiles.restorePrevious")}
                     </button>
                   ) : null}
+                  <button className="text-button profile-delete" disabled={profileBusy === profile.id} onClick={() => setSelectedDeleteProfile(profile)} type="button">
+                    <Trash2 aria-hidden="true" size={16} />{t("profiles.delete")}
+                  </button>
                 </div>
               </article>
             ))}
@@ -221,6 +240,21 @@ export function ImportPage({ onPrepared }: {
                 <RefreshCw aria-hidden="true" size={17} />{t("profiles.armoryConfirm")}
               </button>
               <button className="secondary-button" autoFocus onClick={() => setSelectedArmoryProfile(null)} type="button">{t("profiles.cancel")}</button>
+            </div>
+          </dialog>
+        </div>
+      ) : null}
+      {selectedDeleteProfile ? (
+        <div className="modal-backdrop">
+          <dialog className="update-dialog" open aria-labelledby="profile-delete-title" aria-describedby="profile-delete-description">
+            <p className="eyebrow">{t("profiles.deleteEyebrow")}</p>
+            <h2 id="profile-delete-title">{t("profiles.deleteTitle", { name: selectedDeleteProfile.displayName })}</h2>
+            <p id="profile-delete-description">{t("profiles.deleteBody")}</p>
+            <div className="button-row">
+              <button className="danger-button" disabled={profileBusy === selectedDeleteProfile.id} onClick={() => void deleteProfile()} type="button">
+                <Trash2 aria-hidden="true" size={17} />{profileBusy === selectedDeleteProfile.id ? t("profiles.deleting") : t("profiles.deleteConfirm")}
+              </button>
+              <button className="secondary-button" autoFocus disabled={profileBusy === selectedDeleteProfile.id} onClick={() => setSelectedDeleteProfile(null)} type="button">{t("profiles.cancel")}</button>
             </div>
           </dialog>
         </div>

@@ -212,6 +212,19 @@ impl DesktopService {
         Ok(profile_view(record, DisabledArmoryProvider.status()))
     }
 
+    pub fn delete_character_profile(&self, profile_id: &str) -> Result<()> {
+        validate_profile_id(profile_id)?;
+        let mut catalog = self.read_character_profile_catalog()?;
+        let original_len = catalog.profiles.len();
+        catalog.profiles.retain(|profile| profile.id != profile_id);
+        if catalog.profiles.len() == original_len {
+            return Err(Error::CharacterProfile(
+                "character profile was not found".into(),
+            ));
+        }
+        self.write_character_profile_catalog(&catalog)
+    }
+
     pub fn reload_character_profile_from_armory(
         &self,
         profile_id: &str,
@@ -518,6 +531,31 @@ mod tests {
             .unwrap();
         assert!(restored.request.source.contains("id=1"));
         assert!(!restored.previous_input_available);
+    }
+
+    #[test]
+    fn deleting_a_character_profile_preserves_other_profiles() {
+        let temporary = tempfile::tempdir().unwrap();
+        let service = DesktopService::open(temporary.path()).unwrap();
+        let deleted = service
+            .save_character_profile_import(&request(
+                "warrior=Core\nregion=kr\nserver=azshara\nlevel=90\nrace=orc\nrole=attack\nspec=fury\nhead=,id=1\n",
+            ))
+            .unwrap();
+        let retained = service
+            .save_character_profile_import(&request(
+                "rogue=Other\nregion=kr\nserver=hyjal\nlevel=90\nrace=orc\nrole=attack\nspec=subtlety\nhead=,id=2\n",
+            ))
+            .unwrap();
+
+        service.delete_character_profile(&deleted.id).unwrap();
+        let profiles = service.character_profiles().unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, retained.id);
+        assert!(matches!(
+            service.delete_character_profile(&deleted.id),
+            Err(Error::CharacterProfile(_))
+        ));
     }
 
     #[test]

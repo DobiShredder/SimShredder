@@ -639,6 +639,117 @@ impl Database {
         }))
     }
 
+    pub fn recent_jobs(&self, limit: usize) -> Result<Vec<JobSnapshot>> {
+        if limit == 0 || limit > 500 {
+            return Err(Error::Contract(
+                "recent job limit must be between 1 and 500".into(),
+            ));
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT j.id, j.state, j.cancel_requested, j.failure, SUM(CASE WHEN b.state='succeeded' THEN 1 ELSE 0 END), SUM(CASE WHEN b.state!='succeeded' THEN 1 ELSE 0 END) FROM jobs j JOIN job_batches b ON b.job_id=j.id GROUP BY j.id ORDER BY j.id DESC LIMIT ?1",
+        )?;
+        let rows = statement.query_map(
+            [i64::try_from(limit)
+                .map_err(|_| Error::Contract("recent job limit is too large".into()))?],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            },
+        )?;
+        let mut jobs = Vec::new();
+        for row in rows {
+            let (id, state, cancel, failure, succeeded, pending) = row?;
+            jobs.push(JobSnapshot {
+                id,
+                state: PersistentState::parse(&state)?,
+                cancel_requested: cancel != 0,
+                failure,
+                succeeded_batches: u32::try_from(succeeded)
+                    .map_err(|_| Error::Contract("batch count overflow".into()))?,
+                pending_batches: u32::try_from(pending)
+                    .map_err(|_| Error::Contract("batch count overflow".into()))?,
+            });
+        }
+        Ok(jobs)
+    }
+
+    pub fn delete_terminal_jobs(&mut self, job_ids: &[i64]) -> Result<()> {
+        if job_ids.is_empty() || job_ids.len() > 16 {
+            return Err(Error::Contract(
+                "job deletion requires between 1 and 16 jobs".into(),
+            ));
+        }
+        let mut unique = job_ids.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        if unique.len() != job_ids.len() || unique.iter().any(|id| *id <= 0) {
+            return Err(Error::Contract(
+                "job deletion requires unique positive identifiers".into(),
+            ));
+        }
+
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut profile_ids = Vec::with_capacity(unique.len());
+        for job_id in &unique {
+            let (state, profile_id): (String, i64) = transaction
+                .query_row(
+                    "SELECT state, profile_id FROM jobs WHERE id=?1",
+                    [job_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?
+                .ok_or_else(|| Error::Contract(format!("job {job_id} does not exist")))?;
+            if matches!(
+                PersistentState::parse(&state)?,
+                PersistentState::Queued | PersistentState::Running
+            ) {
+                return Err(Error::Contract(format!(
+                    "job {job_id} is active and cannot be deleted"
+                )));
+            }
+            profile_ids.push(profile_id);
+            if transaction.execute("DELETE FROM jobs WHERE id=?1", [job_id])? != 1 {
+                return Err(Error::Contract(format!("job {job_id} was not deleted")));
+            }
+        }
+        for profile_id in profile_ids {
+            transaction.execute(
+                "DELETE FROM profiles WHERE id=?1 AND NOT EXISTS (SELECT 1 FROM jobs WHERE profile_id=?1)",
+                [profile_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn artifact_directories_excluding_jobs(
+        &self,
+        excluded_job_ids: &[i64],
+    ) -> Result<Vec<PathBuf>> {
+        let mut statement = self.connection.prepare(
+            "SELECT job_id, artifact_directory FROM job_batches WHERE artifact_directory IS NOT NULL",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut directories = Vec::new();
+        for row in rows {
+            let (job_id, directory) = row?;
+            if !excluded_job_ids.contains(&job_id) {
+                directories.push(PathBuf::from(directory));
+            }
+        }
+        Ok(directories)
+    }
+
     pub fn attempts_for_job(&self, job_id: i64) -> Result<Vec<AttemptSnapshot>> {
         let mut statement = self.connection.prepare(
             "SELECT a.id, a.batch_id, a.sequence, a.state, a.failure, a.artifact_directory, a.cache_hit, a.stdout_log_truncated, a.stderr_log_truncated FROM job_attempts a JOIN job_batches b ON b.id=a.batch_id WHERE b.job_id=?1 ORDER BY b.ordinal, a.sequence",
@@ -977,6 +1088,97 @@ mod tests {
             )
             .unwrap();
         assert_eq!(migration_table, 0);
+    }
+
+    #[test]
+    fn recent_jobs_are_bounded_and_newest_first() {
+        let mut database = Database::open_in_memory().unwrap();
+        let profile_id = profile(&mut database);
+        let first = database
+            .enqueue_job(&new_job(profile_id), &batches(1))
+            .unwrap();
+        let second = database
+            .enqueue_job(&new_job(profile_id), &batches(2))
+            .unwrap();
+
+        let jobs = database.recent_jobs(10).unwrap();
+        assert_eq!(
+            jobs.iter().map(|job| job.id).collect::<Vec<_>>(),
+            [second, first]
+        );
+        assert_eq!(jobs[0].pending_batches, 2);
+        assert!(database.recent_jobs(0).is_err());
+        assert!(database.recent_jobs(501).is_err());
+    }
+
+    #[test]
+    fn terminal_job_deletion_cascades_history_and_rejects_active_work() {
+        let mut database = Database::open_in_memory().unwrap();
+        let profile_id = profile(&mut database);
+        let job_id = database
+            .enqueue_job(&new_job(profile_id), &batches(1))
+            .unwrap();
+        assert!(database.delete_terminal_jobs(&[job_id]).is_err());
+
+        let attempt = database.claim_next_attempt().unwrap().unwrap();
+        database
+            .complete_attempt(
+                attempt.attempt_id,
+                Path::new("/tmp/deleted-artifact"),
+                &"f".repeat(64),
+                false,
+            )
+            .unwrap();
+        database.delete_terminal_jobs(&[job_id]).unwrap();
+
+        assert!(database.job(job_id).is_err());
+        assert!(database.attempts_for_job(job_id).unwrap().is_empty());
+        let remaining_profiles: i64 = database
+            .connection
+            .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining_profiles, 0);
+    }
+
+    #[test]
+    fn deletion_preserves_cache_and_detects_artifacts_referenced_by_other_jobs() {
+        let mut database = Database::open_in_memory().unwrap();
+        let profile_id = profile(&mut database);
+        let first = database
+            .enqueue_job(&new_job(profile_id), &batches(1))
+            .unwrap();
+        let second = database
+            .enqueue_job(&new_job(profile_id), &batches(1))
+            .unwrap();
+        for _ in 0..2 {
+            let attempt = database.claim_next_attempt().unwrap().unwrap();
+            database
+                .complete_attempt(
+                    attempt.attempt_id,
+                    Path::new("/tmp/shared-artifact"),
+                    &"f".repeat(64),
+                    false,
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            database
+                .artifact_directories_excluding_jobs(&[first])
+                .unwrap(),
+            [PathBuf::from("/tmp/shared-artifact")]
+        );
+        database.delete_terminal_jobs(&[first]).unwrap();
+        assert_eq!(
+            database.job(second).unwrap().state,
+            PersistentState::Succeeded
+        );
+        assert!(
+            database
+                .cache_entry(&format!("{:064x}", 10))
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

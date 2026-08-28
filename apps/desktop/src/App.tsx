@@ -16,15 +16,17 @@ import {
 import { useCallback, useEffect, useState, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import type { SupportedLocale } from "./i18n";
-import { quickJobStatus, quickRecover, type JobView, type PreparedQuickSim, type QuickResultView, type QuickSimRequest } from "./quick";
+import { quickDelete, quickJobs as loadQuickJobs, quickRecover, type JobView, type PreparedQuickSim, type QuickSimRequest } from "./quick";
+import { sameRun, type RunReference } from "./runs";
 import { formatRuntimeDataDate, runtimeCheckUpdates, runtimeInstallLatest, runtimeStatus, type RuntimeView } from "./runtime";
 import { ImportPage } from "./screens/ImportPage";
+import { HistoryPage } from "./screens/HistoryPage";
 import { JobsPage } from "./screens/JobsPage";
 import { QuickSimPage } from "./screens/QuickSimPage";
 import { ResultsPage } from "./screens/ResultsPage";
 import { SettingsPage } from "./screens/SettingsPage";
 import { TopGearPage } from "./screens/TopGearPage";
-import { topGearSessions, type TopGearSessionView } from "./topGear";
+import { topGearDelete, topGearSessions, type TopGearSessionView } from "./topGear";
 
 type Page = "home" | "import" | "quickSim" | "topGear" | "jobs" | "results" | "history" | "settings";
 
@@ -60,9 +62,10 @@ export function App() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [quickRequest, setQuickRequest] = useState<QuickSimRequest | null>(null);
   const [preview, setPreview] = useState<PreparedQuickSim | null>(null);
-  const [job, setJob] = useState<JobView | null>(null);
-  const [result, setResult] = useState<QuickResultView | null>(null);
-  const [topGearSession, setTopGearSession] = useState<TopGearSessionView | null>(null);
+  const [jobs, setJobs] = useState<JobView[]>([]);
+  const [topGearSessionsState, setTopGearSessionsState] = useState<TopGearSessionView[]>([]);
+  const [selectedRun, setSelectedRun] = useState<RunReference | null>(null);
+  const [selectedResult, setSelectedResult] = useState<RunReference | null>(null);
   const [runtime, setRuntime] = useState<RuntimeView | null>(null);
   const [runtimeUpdate, setRuntimeUpdate] = useState<RuntimeView | null>(null);
   const [runtimeUpdateBusy, setRuntimeUpdateBusy] = useState(false);
@@ -74,14 +77,11 @@ export function App() {
   }, [i18n.resolvedLanguage, theme]);
 
   useEffect(() => {
-    void quickRecover().then(async (jobs) => {
-      const latest = jobs.at(-1);
-      if (latest !== undefined) setJob(await quickJobStatus(latest));
-    }).catch(() => undefined);
+    void quickRecover().then(loadQuickJobs).then(setJobs).catch(() => undefined);
   }, []);
 
   useEffect(() => {
-    void topGearSessions().then((sessions) => setTopGearSession(sessions.at(-1) ?? null)).catch(() => undefined);
+    void topGearSessions().then(setTopGearSessionsState).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -104,7 +104,24 @@ export function App() {
     }).catch(() => undefined);
   }, []);
 
-  const updateJob = useCallback((next: JobView) => setJob(next), []);
+  const updateJob = useCallback((next: JobView) => setJobs((current) => [next, ...current.filter((job) => job.id !== next.id)]), []);
+  const updateTopGearSession = useCallback((next: TopGearSessionView) => setTopGearSessionsState((current) => [next, ...current.filter((session) => session.id !== next.id)]), []);
+  const openRun = useCallback((run: RunReference) => { setSelectedRun(run); setPage("jobs"); }, []);
+  const openResult = useCallback((run: RunReference) => { setSelectedResult(run); setPage("results"); }, []);
+  const deleteRun = useCallback(async (run: RunReference) => {
+    if (run.kind === "quick") {
+      await quickDelete(run.jobId);
+      setJobs((current) => current.filter((job) => job.id !== run.jobId));
+    } else {
+      const session = topGearSessionsState.find((candidate) => candidate.id === run.sessionId);
+      await topGearDelete(run.sessionId);
+      const jobIds = new Set(session ? [session.lowJobId, session.highJobId, session.actionJobId].filter((id): id is number => id !== null) : []);
+      setTopGearSessionsState((current) => current.filter((candidate) => candidate.id !== run.sessionId));
+      setJobs((current) => current.filter((job) => !jobIds.has(job.id)));
+    }
+    setSelectedRun((current) => sameRun(current, run) ? null : current);
+    setSelectedResult((current) => sameRun(current, run) ? null : current);
+  }, [topGearSessionsState]);
 
   const changeLocale = (locale: SupportedLocale) => {
     void i18n.changeLanguage(locale);
@@ -122,6 +139,17 @@ export function App() {
       setRuntimeUpdateBusy(false);
     }
   };
+  const topGearJobIds = new Set(topGearSessionsState.flatMap((session) => [session.lowJobId, session.highJobId, session.actionJobId].filter((id): id is number => id !== null)));
+  const quickRuns = jobs.filter((job) => !topGearJobIds.has(job.id));
+  const trackedSession = topGearSessionsState.find((session) => session.stage !== "complete");
+  const trackedJob = quickRuns.find((candidate) => ["queued", "running"].includes(candidate.state));
+  const trackedTopGear = trackedSession
+    ? { page: "jobs" as const, label: t("status.gearOptimizer"), detail: `${t(`topGear.stage_${trackedSession.stage}`)} · ${t(`jobsPage.${trackedSession.currentJob.state}`)}`, active: ["queued", "running"].includes(trackedSession.currentJob.state) }
+    : null;
+  const trackedQuick = trackedJob
+    ? { page: "jobs" as const, label: t("status.characterAnalysis"), detail: t(`jobsPage.${trackedJob.state}`), active: true }
+    : null;
+  const trackedWork = trackedTopGear ?? trackedQuick;
 
   return (
     <>
@@ -159,11 +187,15 @@ export function App() {
 
       <section className="workspace">
         <header className="topbar" role="banner">
-          <div className="queue-state" aria-live="polite">
+          {trackedWork ? <button className="queue-state queue-state-button" type="button" aria-live="polite" onClick={() => setPage(trackedWork.page)}>
+            <span className={`status-dot ${trackedWork.active ? "status-dot-active" : ""}`} aria-hidden="true" />
+            <span>{trackedWork.label}</span>
+            <span className="muted">· {trackedWork.detail}</span>
+          </button> : <div className="queue-state" aria-live="polite">
             <span className="status-dot" aria-hidden="true" />
             <span>{t("status.idle")}</span>
             <span className="muted">· {t("status.noActiveJobs")}</span>
-          </div>
+          </div>}
           <div className="topbar-actions">
             <label className="compact-control">
               <Languages aria-hidden="true" size={17} />
@@ -194,13 +226,15 @@ export function App() {
           ) : page === "import" ? (
             <ImportPage onPrepared={(request, prepared) => { setQuickRequest(request); setPreview(prepared); setPage("quickSim"); }} />
           ) : page === "quickSim" ? (
-            <QuickSimPage request={quickRequest} preview={preview} onChange={(request, prepared) => { setQuickRequest(request); setPreview(prepared); }} onStarted={(next) => { setJob(next); setPage("jobs"); }} onImport={() => setPage("import")} />
+            <QuickSimPage request={quickRequest} preview={preview} onChange={(request, prepared) => { setQuickRequest(request); setPreview(prepared); }} onStarted={(next) => { updateJob(next); openRun({ kind: "quick", jobId: next.id }); }} onImport={() => setPage("import")} />
           ) : page === "topGear" ? (
-            <TopGearPage quick={quickRequest} initialSession={topGearSession} onSession={setTopGearSession} onImport={() => setPage("import")} />
+            <TopGearPage quick={quickRequest} onStarted={(next) => { updateTopGearSession(next); openRun({ kind: "topGear", sessionId: next.id }); }} onImport={() => setPage("import")} />
           ) : page === "jobs" ? (
-            <JobsPage initialJob={job} onJob={updateJob} onResult={(next) => { setResult(next); setPage("results"); }} />
+            <JobsPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} selected={selectedRun} onSelect={setSelectedRun} onQuickJob={updateJob} onTopGearSession={updateTopGearSession} onResult={openResult} />
           ) : page === "results" ? (
-            <ResultsPage result={result} />
+            <ResultsPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} selected={selectedResult} onSelect={setSelectedResult} />
+          ) : page === "history" ? (
+            <HistoryPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} onOpenRun={openRun} onOpenResult={openResult} onDelete={deleteRun} />
           ) : page === "settings" ? (
             <SettingsPage initialRuntime={runtime} onRuntimeChange={setRuntime} />
           ) : (

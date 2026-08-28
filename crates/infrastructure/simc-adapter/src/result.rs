@@ -46,9 +46,14 @@ pub fn normalize_quick_result(
     let player = &players[0];
     let role = string(player, "/role")?;
     let metric_name = match role.as_str() {
-        "attack" | "tank" => "dps",
+        "attack" | "tank" | "melee" | "spell" | "hybrid" | "dps" => "dps",
         "heal" => "hps",
-        _ => return contract("unsupported result role"),
+        // SimC reports `auto` for otherwise valid damage actors when an imported
+        // profile used one of its historical DPS role aliases. The collected
+        // metric is the authoritative execution result in that case.
+        "auto" if player.pointer("/collected_data/dps").is_some() => "dps",
+        "auto" if player.pointer("/collected_data/hps").is_some() => "hps",
+        _ => return contract(format!("unsupported result role: {role}")),
     };
     let metric = player
         .pointer(&format!("/collected_data/{metric_name}"))
@@ -507,5 +512,24 @@ mod tests {
         .unwrap();
         assert_eq!(result.actions.len(), MAX_ACTIONS);
         assert_eq!(result.apl_sequence.len(), MAX_APL_ACTIONS);
+    }
+
+    #[test]
+    fn accepts_auto_role_when_simc_emits_an_unambiguous_damage_metric() {
+        let mut document: Value = serde_json::from_str(include_str!(
+            "../../../../test-data/fixtures/reports/quick-1210-01-3487fce.min.json"
+        ))
+        .unwrap();
+        document["sim"]["players"][0]["role"] = Value::String("auto".into());
+
+        let result = normalize_quick_result(
+            &serde_json::to_vec(&document).unwrap(),
+            &identity(),
+            "3487fce",
+        )
+        .unwrap();
+
+        assert_eq!(result.player.role, "auto");
+        assert_eq!(result.primary_metric.name, "dps");
     }
 }

@@ -1,11 +1,46 @@
 import * as Tabs from "@radix-ui/react-tabs";
 import { Download } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { quickExport, type QuickResultView } from "../quick";
+import { quickExport, quickResult, type JobView, type QuickResultView } from "../quick";
+import { runKey, sameRun, type RunReference } from "../runs";
+import { topGearResult, type TopGearResultView, type TopGearSessionView } from "../topGear";
 import { EntityTooltip, type TooltipKind, type TooltipModel } from "../tooltips";
+import { TopGearResultsPanel } from "./TopGearResultsPanel";
 
-export function ResultsPage({ result }: { result: QuickResultView | null }) {
+export function ResultsPage({ quickJobs, topGearSessions, selected, onSelect }: {
+  quickJobs: JobView[];
+  topGearSessions: TopGearSessionView[];
+  selected: RunReference | null;
+  onSelect: (run: RunReference) => void;
+}) {
+  const { t } = useTranslation();
+  const [quick, setQuick] = useState<QuickResultView | null>(null);
+  const [gear, setGear] = useState<TopGearResultView | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const completed = useMemo(() => [
+    ...topGearSessions.filter((session) => session.stage === "complete").map((session) => ({ run: { kind: "topGear", sessionId: session.id } as RunReference, label: `${t("historyPage.gearOptimizer")} · ${session.id}` })),
+    ...quickJobs.filter((job) => job.state === "succeeded").map((job) => ({ run: { kind: "quick", jobId: job.id } as RunReference, label: `${t("historyPage.characterAnalysis")} · ${t("jobsPage.job", { id: job.id })}` })),
+  ], [quickJobs, t, topGearSessions]);
+
+  useEffect(() => { if ((!selected || !completed.some((entry) => sameRun(selected, entry.run))) && completed[0]) onSelect(completed[0].run); }, [completed, onSelect, selected]);
+  useEffect(() => {
+    if (!selected || !completed.some((entry) => sameRun(selected, entry.run))) return;
+    setError(null); setQuick(null); setGear(null);
+    const load = selected.kind === "quick"
+      ? quickResult(selected.jobId).then(setQuick)
+      : topGearResult(selected.sessionId).then(setGear);
+    void load.catch((reason) => setError(String(reason)));
+  }, [completed, selected]);
+  const picker = <section className="result-picker"><label>{t("resultsPage.chooseResult")}<select value={selected ? runKey(selected) : ""} onChange={(event) => { const entry = completed.find((candidate) => runKey(candidate.run) === event.target.value); if (entry) onSelect(entry.run); }}>{completed.map((entry) => <option key={runKey(entry.run)} value={runKey(entry.run)}>{entry.label}</option>)}</select></label></section>;
+  if (!completed.length) return <div className="page placeholder-page"><p className="eyebrow">{t("resultsPage.eyebrow")}</p><h1>{t("resultsPage.noResult")}</h1><p>{t("resultsPage.noResultBody")}</p></div>;
+  if (error) return <div className="page results-page"><p className="eyebrow">{t("resultsPage.eyebrow")}</p><h1>{t("resultsPage.loadFailed")}</h1>{picker}<div className="inline-error" role="alert"><code>{error}</code></div></div>;
+  if (gear) return <TopGearResultsPanel result={gear} picker={picker} />;
+  if (quick) return <QuickResultPanel result={quick} picker={picker} />;
+  return <div className="page results-page"><p className="eyebrow">{t("resultsPage.eyebrow")}</p><h1>{t("resultsPage.loading")}</h1>{picker}</div>;
+}
+
+function QuickResultPanel({ result, picker }: { result: QuickResultView | null; picker: ReactNode }) {
   const { t, i18n } = useTranslation();
   const chart = useRef<HTMLDivElement>(null);
   const metric = result?.result.primary_metric;
@@ -65,6 +100,7 @@ export function ResultsPage({ result }: { result: QuickResultView | null }) {
     <div className="page results-page">
       <p className="eyebrow">{t("resultsPage.eyebrow")}</p>
       <h1>{t("resultsPage.title", { name: normalized.player.name, spec: normalized.player.specialization })}</h1>
+      {picker}
       <section className="metric-grid">
         <article className="primary-metric"><span>{t("resultsPage.primary", { metric: metric.name })}</span><strong>{number(metric.mean)}</strong><small>± {number(metric.mean_error)}</small></article>
         <article><span>{t("resultsPage.error")}</span><strong>{number(metric.mean_error)}</strong></article>

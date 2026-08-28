@@ -36,6 +36,10 @@ export function setCharacterProfileFavorite(profileId: string, favorite: boolean
   return invoke("character_profile_set_favorite", { profileId, favorite });
 }
 
+export function deleteCharacterProfile(profileId: string): Promise<void> {
+  return invoke("character_profile_delete", { profileId });
+}
+
 export function reloadCharacterProfileFromArmory(profileId: string): Promise<CharacterProfile> {
   return invoke("character_profile_reload_armory", { profileId });
 }

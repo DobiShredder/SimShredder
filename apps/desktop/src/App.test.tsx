@@ -1,9 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import axe from "axe-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n, { resources } from "./i18n";
 import { App } from "./App";
+import type { JobView } from "./quick";
+import type { TopGearSessionView } from "./topGear";
 
 const { mockInvoke, mockOpen } = vi.hoisted(() => ({ mockInvoke: vi.fn(), mockOpen: vi.fn() }));
 
@@ -45,6 +47,8 @@ const readyRuntime = {
 } as const;
 
 let runtimeStatusResult: unknown = missingRuntime;
+let recoveredQuickJobs: JobView[] = [];
+let recoveredTopGearSessions: TopGearSessionView[] = [];
 
 const emptyIconStatus = { budgetBytes: 268435456, usedBytes: 0, iconCount: 0, mappingCount: 0, remoteProviderEnabled: false } as const;
 let iconStatus: { budgetBytes: number; usedBytes: number; iconCount: number; mappingCount: number; remoteProviderEnabled: boolean } = emptyIconStatus;
@@ -82,7 +86,7 @@ const prepared = {
   profilesetWorkThreads: 2,
 } as const;
 
-const succeededJob = {
+const succeededJob: JobView = {
   id: 7,
   state: "succeeded",
   cancelRequested: false,
@@ -90,7 +94,7 @@ const succeededJob = {
   succeededBatches: 1,
   pendingBatches: 0,
   attempts: [{ id: 8, sequence: 1, state: "succeeded", failure: null, cacheHit: false, stdoutLogTruncated: false, stderrLogTruncated: false }],
-} as const;
+};
 
 const topGearPrepared = {
   profileName: "Core",
@@ -106,6 +110,9 @@ const topGearPrepared = {
   variants: [
     { key: "worn-head-154029", sourceItemId: 154029, slot: "head", displayName: "Worn Helm", rank: 0, gemIds: [], enchantId: null, simcOptions: {}, cost: {}, actions: [], uniqueGroups: [], setGroups: [], weaponKind: "none", embellishment: false, catalyst: false, enabled: true, changed: false },
     { key: "bag-head-154030", sourceItemId: 154030, slot: "head", displayName: "Candidate Helm", rank: 0, gemIds: [], enchantId: null, simcOptions: {}, cost: {}, actions: [], uniqueGroups: [], setGroups: [], weaponKind: "none", embellishment: false, catalyst: false, enabled: true, changed: true },
+    { key: "worn-trinket1-1001", sourceItemId: 1001, slot: "trinket1", displayName: "First Worn Trinket", rank: 0, gemIds: [], enchantId: null, simcOptions: {}, cost: {}, actions: [], uniqueGroups: [], setGroups: [], weaponKind: "none", embellishment: false, catalyst: false, enabled: true, changed: false },
+    { key: "worn-trinket2-1002", sourceItemId: 1002, slot: "trinket2", displayName: "Second Worn Trinket", rank: 0, gemIds: [], enchantId: null, simcOptions: {}, cost: {}, actions: [], uniqueGroups: [], setGroups: [], weaponKind: "none", embellishment: false, catalyst: false, enabled: true, changed: false },
+    { key: "bag-trinket1-2001", sourceItemId: 2001, slot: "trinket1", displayName: "Candidate Trinket", rank: 0, gemIds: [], enchantId: null, simcOptions: { ilevel: "334" }, cost: {}, actions: [], uniqueGroups: [], setGroups: [], weaponKind: "none", embellishment: false, catalyst: false, enabled: true, changed: true },
   ],
   talentLoadouts: [
     { key: "active", label: "Active", option: "talents", value: "ACTIVE", changed: false, enabled: true },
@@ -118,7 +125,7 @@ const topGearPrepared = {
   loadouts: [],
 } as const;
 
-const topGearSession = (stage: "low_precision" | "high_precision" | "complete") => ({
+const topGearSession = (stage: "low_precision" | "high_precision" | "complete"): TopGearSessionView => ({
   id: "tg-test",
   stage,
   currentJob: succeededJob,
@@ -134,7 +141,10 @@ const topGearResultFixture = {
   sessionId: "tg-test",
   baselineKey: "baseline",
   ruleRevision: "12.1.0-69465-v1",
-  ranked: [{ loadout: { key: "winner", items: {}, cost: { crest: 5 }, changedSlots: 1, changedOptions: 0, talent: { key: "active", label: "Active", option: "talents", value: "ACTIVE", changed: false, enabled: true }, profileOptions: {} }, mean: 123500, meanError: 50, delta: 500, combinedError: 70, equivalentToBaseline: false, paretoOptimal: true, rank: 1 }],
+  ranked: [
+    { loadout: { key: "winner", items: { head: topGearPrepared.variants[1] }, cost: { crest: 5 }, changedSlots: 1, changedOptions: 0, talent: { key: "active", label: "Active", option: "talents", value: "ACTIVE", changed: false, enabled: true }, profileOptions: {} }, mean: 123500, meanError: 50, delta: 500, combinedError: 70, equivalentToBaseline: false, paretoOptimal: true, rank: 1 },
+    { loadout: { key: "baseline", items: { head: topGearPrepared.variants[0] }, cost: {}, changedSlots: 0, changedOptions: 0, talent: { key: "active", label: "Active", option: "talents", value: "ACTIVE", changed: false, enabled: true }, profileOptions: {} }, mean: 123000, meanError: 50, delta: 0, combinedError: 70, equivalentToBaseline: true, paretoOptimal: false, rank: 2 },
+  ],
   lowJobId: 7,
   highJobId: 9,
   actionJobId: null,
@@ -194,6 +204,8 @@ describe("application shell", () => {
     iconStatus = emptyIconStatus;
     storagePaths = { ...defaultStoragePaths };
     storedProfiles = [];
+    recoveredQuickJobs = [];
+    recoveredTopGearSessions = [];
     runtimeStatusResult = missingRuntime;
     mockInvoke.mockImplementation((command: string, arguments_: unknown) => {
       if (command === "runtime_install_latest") return Promise.resolve(readyRuntime);
@@ -239,10 +251,16 @@ describe("application shell", () => {
         storedProfiles = [profile];
         return Promise.resolve(profile);
       }
+      if (command === "character_profile_delete") {
+        const request = arguments_ as { profileId: string };
+        storedProfiles = storedProfiles.filter(({ id }) => id !== request.profileId);
+        return Promise.resolve();
+      }
       if (command === "character_profile_reload_armory") return Promise.reject(new Error("Armory reload is unavailable"));
       if (command === "character_profile_restore_previous") return Promise.resolve(storedProfiles[0]);
       if (command === "quick_recover") return Promise.resolve([]);
-      if (command === "top_gear_sessions") return Promise.resolve([]);
+      if (command === "quick_jobs") return Promise.resolve(recoveredQuickJobs);
+      if (command === "top_gear_sessions") return Promise.resolve(recoveredTopGearSessions);
       if (command === "top_gear_prepare") return Promise.resolve(topGearPrepared);
       if (command === "top_gear_start") {
         currentTopGearSession = topGearSession("low_precision");
@@ -257,6 +275,7 @@ describe("application shell", () => {
       }
       if (command === "top_gear_result") return Promise.resolve(topGearResultFixture);
       if (command === "top_gear_export") return Promise.resolve({ directory: "/Documents/SimShredder Exports/top-gear-tg-test", fileCount: 5 });
+      if (command === "top_gear_delete" || command === "quick_delete") return Promise.resolve();
       if (command === "quick_prepare") return Promise.resolve(prepared);
       if (command === "quick_start" || command === "quick_job_status") return Promise.resolve(succeededJob);
       if (command === "quick_result") return Promise.resolve(quickResultFixture);
@@ -355,6 +374,27 @@ describe("application shell", () => {
     await user.clear(source);
     await user.type(source, "# SimC Addon 12.1.0-01\n# WoW 12.1.0.69497, TOC 120100\nrogue=Character");
     expect(screen.getByRole("radio", { name: "AddOn export" })).toBeChecked();
+  });
+
+  it("deletes a saved character profile only after confirmation", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Profile" }));
+    await user.type(screen.getByRole("textbox", { name: "Profile source" }), "warrior=Core");
+    await user.click(screen.getByRole("button", { name: "Review profile" }));
+    await screen.findByRole("heading", { name: "Review simulation input" });
+    await user.click(screen.getByRole("button", { name: "Profile" }));
+
+    await user.click(await screen.findByRole("button", { name: "Delete profile" }));
+    const dialog = screen.getByRole("dialog", { name: "Delete Core?" });
+    expect(dialog).toHaveTextContent("Simulation history, results, and exported files are kept.");
+    await expectNoAutomatedAccessibilityViolations();
+    await user.click(within(dialog).getByRole("button", { name: "Delete profile" }));
+
+    expect(mockInvoke).toHaveBeenCalledWith("character_profile_delete", { profileId: "a".repeat(32) });
+    expect(await screen.findByText("No character profiles have been saved yet. Reviewing an input saves it here.")).toBeVisible();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("shows core analysis controls and keeps deep SimC options collapsed", async () => {
@@ -565,9 +605,14 @@ describe("application shell", () => {
     expect(screen.getByRole("button", { name: "Add virtual variant" })).toBeEnabled();
     expect(screen.getByRole("heading", { name: "Gear candidates" })).toBeVisible();
     expect(screen.getByRole("checkbox", { name: /Candidate Helm/ })).toBeChecked();
+    expect(screen.getAllByText("Trinkets · choose 2")).toHaveLength(2);
+    expect(screen.queryByText("Trinket 1")).not.toBeInTheDocument();
+    expect(screen.queryByText("Trinket 2")).not.toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /Dungeon/ })).not.toBeChecked();
     await user.click(screen.getByRole("button", { name: "Lock Head" }));
     expect(mockInvoke).toHaveBeenCalledWith("top_gear_prepare", expect.objectContaining({ request: expect.objectContaining({ lockedSlots: ["head"] }) }));
+    await user.click(screen.getByRole("button", { name: "Lock Trinkets · choose 2" }));
+    expect(mockInvoke).toHaveBeenCalledWith("top_gear_prepare", expect.objectContaining({ request: expect.objectContaining({ lockedSlots: ["head", "trinket1", "trinket2"] }) }));
     await user.click(screen.getByRole("checkbox", { name: /Dungeon/ }));
     expect(mockInvoke).toHaveBeenCalledWith("top_gear_prepare", expect.objectContaining({ request: expect.objectContaining({ talentLoadouts: expect.arrayContaining([expect.objectContaining({ key: "saved-0", enabled: true })]) }) }));
     await expectNoAutomatedAccessibilityViolations();
@@ -582,10 +627,12 @@ describe("application shell", () => {
     await user.click(screen.getByRole("button", { name: "Gear Optimizer" }));
     await screen.findByText("Exact execution preview");
     await user.click(screen.getByRole("button", { name: "Start Gear Optimizer" }));
-    expect(await screen.findByText("Broad low-precision search")).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Job status" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Broad low-precision search" })).toBeVisible();
+    expect(screen.getByText("This stage is complete. Continue when you are ready for the next verification stage.")).toBeVisible();
     expect(screen.getByRole("progressbar")).toHaveAccessibleName("2 of 4 planned profiles evaluated");
     await user.click(screen.getByRole("button", { name: "Continue to the next verified stage" }));
-    expect(await screen.findByText("High-precision finalist verification")).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "High-precision finalist verification" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Continue to the next verified stage" }));
     expect(await screen.findByText("Verified loadout ranking")).toBeVisible();
     expect(screen.getByText("The top result improves on your equipped setup")).toBeVisible();
@@ -593,9 +640,54 @@ describe("application shell", () => {
     expect(screen.getByText("+500")).toBeVisible();
     expect(screen.getByRole("combobox", { name: "Result filter" })).toBeVisible();
     expect(screen.getByRole("combobox", { name: "Sort by" })).toBeVisible();
-    expect(screen.getByRole("checkbox", { name: "Select rank 1 for comparison" })).toBeVisible();
+    expect(screen.getByText("Candidate Helm")).toBeVisible();
+    expect(screen.getAllByText("Changed from equipped").length).toBeGreaterThan(0);
+    expect(screen.getByText("Candidate Helm").closest("li")).toHaveClass("loadout-item-changed");
+    expect(screen.getByRole("button", { name: "Use rank 1 as the comparison reference" })).toBeVisible();
+    expect(screen.getByText("+0.4%")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Use rank 1 as the comparison reference" }));
+    expect(screen.getByRole("heading", { name: "Rank 1 loadout" })).toBeVisible();
+    expect(screen.getByText("-500")).toBeVisible();
     await expectNoAutomatedAccessibilityViolations();
     await user.click(screen.getByRole("button", { name: "Export verified Gear Optimizer artifacts" }));
     expect(await screen.findByText(/Exported 5 files/)).toBeVisible();
+  });
+
+  it("uses History as the saved run archive and switches between completed results", async () => {
+    recoveredTopGearSessions = [
+      topGearSession("complete"),
+      { ...topGearSession("complete"), id: "tg-older", lowJobId: 11, highJobId: 12, currentJob: { ...succeededJob, id: 12 } },
+    ];
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "History" }));
+    expect(await screen.findByRole("heading", { name: "Run history" })).toBeVisible();
+    expect(screen.getByText("Session tg-test")).toBeVisible();
+    expect(screen.getByText("Session tg-older")).toBeVisible();
+    const historyEntries = screen.getAllByRole("listitem");
+    await user.click(within(historyEntries.find((entry) => entry.textContent?.includes("tg-older"))!).getByRole("button", { name: "Open result" }));
+
+    const chooser = await screen.findByRole("combobox", { name: "Completed result" });
+    expect(within(chooser).getAllByRole("option")).toHaveLength(2);
+    expect(mockInvoke).toHaveBeenCalledWith("top_gear_result", { sessionId: "tg-older" });
+    await user.selectOptions(chooser, "top-gear-tg-test");
+    expect(await screen.findByRole("heading", { name: "Gear Optimizer result" })).toBeVisible();
+    expect(mockInvoke).toHaveBeenCalledWith("top_gear_result", { sessionId: "tg-test" });
+  });
+
+  it("deletes a terminal run from local History only after confirmation", async () => {
+    recoveredTopGearSessions = [topGearSession("complete")];
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "History" }));
+    expect(await screen.findByText("Session tg-test")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Delete Gear Optimizer Session tg-test" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("The run record and artifacts used only by this run will be permanently deleted");
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete run" }));
+
+    await waitFor(() => expect(screen.queryByText("Session tg-test")).not.toBeInTheDocument());
+    expect(mockInvoke).toHaveBeenCalledWith("top_gear_delete", { sessionId: "tg-test" });
   });
 });
