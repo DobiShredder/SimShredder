@@ -126,6 +126,7 @@ pub fn execute(
         source_kind: prepared.profile.source_kind,
         source_bytes: &prepared.source_bytes,
         generated_bytes: &prepared.generated_bytes,
+        rule_revision: None,
         output_directory,
         timeout,
     })?)

@@ -21,6 +21,8 @@ type VariantDraft = {
   enchantId: string;
   rank: number;
   itemLevel: string;
+  adventurerMistcrest: number;
+  veteranMistcrest: number;
   championMistcrest: number;
   heroMistcrest: number;
   mythMistcrest: number;
@@ -38,6 +40,8 @@ const emptyVariant: VariantDraft = {
   enchantId: "",
   rank: 0,
   itemLevel: "",
+  adventurerMistcrest: 0,
+  veteranMistcrest: 0,
   championMistcrest: 0,
   heroMistcrest: 0,
   mythMistcrest: 0,
@@ -54,6 +58,9 @@ type CandidateSlot = Exclude<GearSlot, "finger1" | "finger2" | "trinket1" | "tri
 const candidateSlotOrder: CandidateSlot[] = ["head", "neck", "shoulders", "back", "chest", "wrists", "hands", "waist", "legs", "feet", "finger", "trinket", "main_hand", "off_hand", "shirt", "tabard"];
 const candidateSlot = (slot: GearSlot): CandidateSlot => slot === "finger1" || slot === "finger2" ? "finger" : slot === "trinket1" || slot === "trinket2" ? "trinket" : slot;
 const memberSlots = (slot: CandidateSlot): GearSlot[] => slot === "finger" ? ["finger1", "finger2"] : slot === "trinket" ? ["trinket1", "trinket2"] : [slot];
+const budgetCurrencies = ["adventurer_mistcrest", "veteran_mistcrest", "champion_mistcrest", "hero_mistcrest", "myth_mistcrest", "spark_of_tides"] as const;
+const unlimitedResourceValue = 99_999;
+const nonNegativeInteger = (value: number) => Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
 
 export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimRequest | null; onStarted: (session: TopGearSessionView) => void; onImport: () => void }) {
   const { t } = useTranslation();
@@ -66,6 +73,7 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
   const [setMinimum, setSetMinimum] = useState(2);
   const [optionKind, setOptionKind] = useState("food");
   const [optionValue, setOptionValue] = useState("");
+  const [omniumValue, setOmniumValue] = useState("");
   const [itemSlot, setItemSlot] = useState<GearSlot>("head");
   const [itemId, setItemId] = useState("");
   const [itemName, setItemName] = useState("");
@@ -87,6 +95,10 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
     }
     return [...items.entries()];
   }, [request?.variants]);
+  const hasUpgradeCandidates = useMemo(() => (request?.variants ?? []).some((variant) => variant.enabled && variant.actions.some((action) => action.kind === "upgrade")), [request?.variants]);
+  const hasCostedUpgradeCandidates = useMemo(() => (request?.variants ?? []).some((variant) => variant.enabled && variant.changed && budgetCurrencies.some((currency) => (variant.cost[currency] ?? 0) > 0)), [request?.variants]);
+  const hasCatalystCandidates = useMemo(() => (request?.variants ?? []).some((variant) => variant.enabled && variant.changed && variant.catalyst), [request?.variants]);
+  const hasDebugUpgradePaths = (request?.upgradeMetadata?.itemUpgradePaths?.length ?? 0) > 0;
 
   const itemTooltip = (variant: ItemVariant) => itemTooltipModel({
     id: variant.sourceItemId,
@@ -122,6 +134,9 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
         setPreview(next);
         setRequest((current) => current ? {
           ...current,
+          balances: current.upgradeMetadata == null && Object.values(current.balances).every((value) => value === 0)
+            ? { ...current.balances, ...next.detectedBalances }
+            : current.balances,
           variants: next.variants.map((variant) => ({ ...variant, enabled: variant.enabled ?? true, displayName: variant.displayName ?? null, setGroups: variant.setGroups ?? [], catalyst: variant.catalyst ?? false, upgrade: variant.upgrade ?? { ownedItemKey: variant.key, currentRank: variant.rank, maxRank: null, source: "unknown" } })),
           talentLoadouts: next.talentLoadouts ?? current.talentLoadouts,
           profileOptions: next.profileOptions ?? current.profileOptions,
@@ -140,8 +155,22 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
 
   const updateNumber = (field: "combinationLimit", value: number) =>
     setRequest({ ...request, [field]: value });
-  const updateCurrency = (kind: "balances" | "reserves", currency: string, value: number) =>
-    setRequest({ ...request, [kind]: { ...request[kind], [currency]: Math.max(0, value) }, currencyConfirmedAtUnixSeconds: Math.floor(Date.now() / 1000) });
+  const updateCurrency = (kind: "balances" | "reserves", currency: string, value: number) => {
+    setRequest({ ...request, [kind]: { ...request[kind], [currency]: nonNegativeInteger(value) }, currencyConfirmedAtUnixSeconds: Math.floor(Date.now() / 1000) });
+    setPreview(null);
+  };
+  const updateCatalystCharges = (value: number) => {
+    setRequest({ ...request, catalystCharges: nonNegativeInteger(value) });
+    setPreview(null);
+  };
+  const maximizeResources = () => {
+    setRequest({
+      ...request,
+      balances: { ...request.balances, ...Object.fromEntries(budgetCurrencies.map((currency) => [currency, unlimitedResourceValue])) },
+      currencyConfirmedAtUnixSeconds: Math.floor(Date.now() / 1000),
+    });
+    setPreview(null);
+  };
   const updateCandidate = (key: string, enabled: boolean) => {
     setRequest({ ...request, variants: request.variants.map((variant) => variant.key === key ? { ...variant, enabled } : variant) });
     setPreview(null);
@@ -170,14 +199,16 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
     setRequest({ ...request, profileOptions: { ...request.profileOptions, [axis]: request.profileOptions[axis].map((candidate) => candidate.key === key ? { ...candidate, enabled } : candidate) } });
     setPreview(null);
   };
-  const addProfileOption = () => {
-    const value = optionValue.trim();
+  const addProfileOption = (axis = optionKind, rawValue = optionValue) => {
+    const value = rawValue.trim();
     if (!value) return;
-    const existing = request.profileOptions[optionKind] ?? [];
+    const existing = request.profileOptions[axis] ?? [];
     if (existing.some((candidate) => candidate.value === value)) { setError(t("topGear.duplicateProfileOption")); return; }
-    const candidate: ProfileOptionVariant = { key: `custom-${optionKind}-${Date.now()}`, label: value, option: optionKind, value, changed: true, enabled: true };
-    setRequest({ ...request, profileOptions: { ...request.profileOptions, [optionKind]: [...existing, candidate] } });
-    setOptionValue(""); setPreview(null); setError(null);
+    const candidate: ProfileOptionVariant = { key: `custom-${axis}-${Date.now()}`, label: value, option: axis, value, changed: true, enabled: true };
+    setRequest({ ...request, profileOptions: { ...request.profileOptions, [axis]: [...existing, candidate] } });
+    if (axis === "omnium_talents") setOmniumValue("");
+    else setOptionValue("");
+    setPreview(null); setError(null);
   };
   const addExactItem = () => {
     const sourceItemId = Number(itemId);
@@ -231,8 +262,8 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
     if (gemIds.length) simcOptions.gem_id = gemIds.join("/"); else if (base.gemIds.length) simcOptions.gem_id = "0"; else delete simcOptions.gem_id;
     if (enchantId) simcOptions.enchant_id = String(enchantId); else if (base.enchantId) simcOptions.enchant_id = "0"; else delete simcOptions.enchant_id;
     if (draft.itemLevel) simcOptions.ilevel = draft.itemLevel; else delete simcOptions.ilevel;
-    const additionalCost = { champion_mistcrest: draft.championMistcrest, hero_mistcrest: draft.heroMistcrest, myth_mistcrest: draft.mythMistcrest, spark_of_tides: draft.sparkOfTides };
-    const cost = { champion_mistcrest: (base.cost.champion_mistcrest ?? 0) + draft.championMistcrest, hero_mistcrest: (base.cost.hero_mistcrest ?? 0) + draft.heroMistcrest, myth_mistcrest: (base.cost.myth_mistcrest ?? 0) + draft.mythMistcrest, spark_of_tides: (base.cost.spark_of_tides ?? 0) + draft.sparkOfTides };
+    const additionalCost = { adventurer_mistcrest: draft.adventurerMistcrest, veteran_mistcrest: draft.veteranMistcrest, champion_mistcrest: draft.championMistcrest, hero_mistcrest: draft.heroMistcrest, myth_mistcrest: draft.mythMistcrest, spark_of_tides: draft.sparkOfTides };
+    const cost = { adventurer_mistcrest: (base.cost.adventurer_mistcrest ?? 0) + draft.adventurerMistcrest, veteran_mistcrest: (base.cost.veteran_mistcrest ?? 0) + draft.veteranMistcrest, champion_mistcrest: (base.cost.champion_mistcrest ?? 0) + draft.championMistcrest, hero_mistcrest: (base.cost.hero_mistcrest ?? 0) + draft.heroMistcrest, myth_mistcrest: (base.cost.myth_mistcrest ?? 0) + draft.mythMistcrest, spark_of_tides: (base.cost.spark_of_tides ?? 0) + draft.sparkOfTides };
     const variantStamp = Date.now();
     const actions: ItemVariant["actions"] = [...base.actions];
     const newActions: ItemVariant["actions"] = [];
@@ -283,7 +314,7 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
       <p className="settings-lead">{t("topGear.body")}</p>
 
       <nav className="optimizer-nav" aria-label={t("topGear.quickNav")}>
-        <a href="#optimizer-gear">{t("topGear.navGear")}</a><a href="#optimizer-enhancements">{t("topGear.navEnhancements")}</a><a href="#optimizer-consumables">{t("topGear.navConsumables")}</a><a href="#optimizer-talents">{t("topGear.navTalents")}</a><a href="#optimizer-options">{t("topGear.navOptions")}</a>
+        <a href="#optimizer-gear">{t("topGear.navGear")}</a><a href="#optimizer-enhancements">{t("topGear.navEnhancements")}</a><a href="#optimizer-consumables">{t("topGear.navConsumables")}</a><a href="#optimizer-omnium">{t("topGear.navOmnium")}</a><a href="#optimizer-talents">{t("topGear.navTalents")}</a><a href="#optimizer-options">{t("topGear.navOptions")}</a>
       </nav>
 
       <section className="candidate-browser" id="optimizer-gear" aria-labelledby="candidate-heading">
@@ -301,7 +332,13 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
       <div className="top-gear-grid">
         <section className="settings-form" aria-labelledby="set-heading">
           <h2 id="set-heading"><ShieldCheck aria-hidden="true" size={18} />{t("topGear.setAndCatalyst")}</h2>
-          <label>{t("topGear.catalystCharges")}<input min={0} max={6} type="number" value={request.catalystCharges} onChange={(event) => { setRequest({ ...request, catalystCharges: Math.max(0, Number(event.target.value)) }); setPreview(null); }} /></label>
+          <div className="catalyst-resource-row">
+            <label>{t("topGear.catalystCharges")}<input min={0} type="number" value={request.catalystCharges} onChange={(event) => updateCatalystCharges(Number(event.target.value))} /></label>
+            <div className="resource-quick-actions" role="group" aria-label={t("topGear.catalystQuickActions")}>
+              <button className="compact-button" type="button" onClick={() => updateCatalystCharges(request.catalystCharges + 1)}>+1</button>
+            </div>
+          </div>
+          {!hasCatalystCandidates ? <p className="safe-note resource-warning">{t("topGear.noCatalystCandidates")}</p> : null}
           <div className="inline-fields"><label>{t("topGear.setGroup")}<input value={setName} onChange={(event) => setSetName(event.target.value)} /></label><label>{t("topGear.minimumPieces")}<input min={1} max={8} type="number" value={setMinimum} onChange={(event) => setSetMinimum(Number(event.target.value))} /></label><button className="secondary-button" disabled={!setName.trim()} type="button" onClick={() => { setRequest({ ...request, minimumSetPieces: { ...request.minimumSetPieces, [setName.trim()]: setMinimum } }); setSetName(""); setPreview(null); }}>{t("topGear.addConstraint")}</button></div>
           <ul className="constraint-list">{Object.entries(request.minimumSetPieces).map(([group, minimum]) => <li key={group}><span>{group} · {t("topGear.pieces", { count: minimum })}</span><button className="text-button" type="button" onClick={() => { const next = { ...request.minimumSetPieces }; delete next[group]; setRequest({ ...request, minimumSetPieces: next }); setPreview(null); }}>{t("topGear.remove")}</button></li>)}</ul>
           <small>{t("topGear.setMetadataHelp")}</small>
@@ -316,27 +353,42 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
 
       <section className="variant-builder" id="optimizer-consumables" aria-labelledby="profile-options-heading">
         <div className="section-heading"><h2 id="profile-options-heading">{t("topGear.profileOptions")}</h2><p>{t("topGear.profileOptionsHelp")}</p></div>
-        <div className="profile-option-groups">{Object.entries(request.profileOptions).map(([axis, candidates]) => <fieldset key={axis}><legend>{t(`topGear.option_${axis}`)}</legend>{candidates.map((candidate) => <label className="checkbox-line" key={candidate.key}><input checked={candidate.enabled} disabled={!candidate.changed} type="checkbox" onChange={(event) => updateProfileOption(axis, candidate.key, event.target.checked)} /><span><strong>{candidate.changed ? candidate.label : t("topGear.profileDefault")}</strong><small>{candidate.value || t("topGear.noOverride")}</small></span></label>)}</fieldset>)}</div>
-        <div className="inline-fields profile-option-add"><label>{t("topGear.optionType")}<select value={optionKind} onChange={(event) => setOptionKind(event.target.value)}>{Object.keys(request.profileOptions).map((axis) => <option key={axis} value={axis}>{t(`topGear.option_${axis}`)}</option>)}</select></label><label>{t("topGear.simcValue")}<input placeholder={t("topGear.simcValuePlaceholder")} value={optionValue} onChange={(event) => setOptionValue(event.target.value)} /></label><button className="secondary-button" disabled={!optionValue.trim()} type="button" onClick={addProfileOption}>{t("topGear.addOption")}</button></div>
+        <div className="profile-option-groups">{Object.entries(request.profileOptions).filter(([axis]) => axis !== "omnium_talents").map(([axis, candidates]) => <fieldset key={axis}><legend>{t(`topGear.option_${axis}`)}</legend>{candidates.map((candidate) => <label className="checkbox-line" key={candidate.key}><input checked={candidate.enabled} disabled={!candidate.changed} type="checkbox" onChange={(event) => updateProfileOption(axis, candidate.key, event.target.checked)} /><span><strong>{candidate.changed ? candidate.label : t("topGear.profileDefault")}</strong><small>{candidate.value || t("topGear.noOverride")}</small></span></label>)}</fieldset>)}</div>
+        <div className="inline-fields profile-option-add"><label>{t("topGear.optionType")}<select value={optionKind} onChange={(event) => setOptionKind(event.target.value)}>{Object.keys(request.profileOptions).filter((axis) => axis !== "omnium_talents").map((axis) => <option key={axis} value={axis}>{t(`topGear.option_${axis}`)}</option>)}</select></label><label>{t("topGear.simcValue")}<input placeholder={t("topGear.simcValuePlaceholder")} value={optionValue} onChange={(event) => setOptionValue(event.target.value)} /></label><button className="secondary-button" disabled={!optionValue.trim()} type="button" onClick={() => addProfileOption()}>{t("topGear.addOption")}</button></div>
+      </section>
+
+      <section className="variant-builder seasonal-content-card" id="optimizer-omnium" aria-labelledby="omnium-heading">
+        <div className="section-heading"><div><p className="eyebrow">{t("topGear.seasonalContent")}</p><h2 id="omnium-heading">{t("topGear.omniumFolio")}</h2></div><p>{t("topGear.omniumHelp")}</p></div>
+        <div className="omnium-candidates">{(request.profileOptions.omnium_talents ?? []).map((candidate) => <div className="omnium-candidate" key={candidate.key}><EntityTooltip model={{ kind: "talent", id: null, title: t("topGear.omniumFolio"), category: t("topGear.seasonalContent"), details: [{ label: t("topGear.simcValue"), value: candidate.value || t("topGear.noOverride") }] }} /><label className="checkbox-line"><input checked={candidate.enabled} disabled={!candidate.changed} type="checkbox" onChange={(event) => updateProfileOption("omnium_talents", candidate.key, event.target.checked)} /><span><strong>{candidate.changed ? candidate.label : t("topGear.profileDefault")}</strong><small>{candidate.value || t("topGear.noOmnium")}</small></span></label></div>)}</div>
+        <div className="omnium-add"><label>{t("topGear.omniumEncodedValue")}<input placeholder="123:1/456:2" value={omniumValue} onChange={(event) => setOmniumValue(event.target.value)} /></label><button className="secondary-button" disabled={!omniumValue.trim()} type="button" onClick={() => addProfileOption("omnium_talents", omniumValue)}>{t("topGear.addOmniumCandidate")}</button></div>
+        <small>{t("topGear.omniumExactHelp")}</small>
       </section>
 
       <section className="settings-form" aria-labelledby="enhancement-policy-heading">
         <h2 id="enhancement-policy-heading"><Hammer aria-hidden="true" size={18} />{t("topGear.enhancementPolicy")}</h2>
         <label>{t("topGear.enhancementPolicyLabel")}<select value={request.enhancementPolicy} onChange={(event) => { setRequest({ ...request, enhancementPolicy: event.target.value as TopGearRequest["enhancementPolicy"] }); setPreview(null); }}><option value="max_potential">{t("topGear.policy_max_potential")}</option><option value="budget_constrained">{t("topGear.policy_budget_constrained")}</option><option value="current_state">{t("topGear.policy_current_state")}</option></select></label>
         <p className="safe-note">{t(`topGear.policy_${request.enhancementPolicy}_help`)}</p>
+        {!hasDebugUpgradePaths && request.enhancementPolicy !== "current_state" ? <p className="safe-note resource-warning" role="status">{t("topGear.debugUpgradeRequired")}</p> : null}
+        {hasDebugUpgradePaths && !hasUpgradeCandidates && request.enhancementPolicy !== "current_state" ? <p className="safe-note resource-warning" role="status">{t("topGear.debugUpgradeCurrentOnly")}</p> : null}
         {request.enhancementPolicy !== "current_state" ? <details className="inline-disclosure"><summary>{t("topGear.itemUpgradeTargets")}</summary><div className="currency-list">{ownedItems.map(([ownedItemKey, variant]) => <div className="currency-row upgrade-target-row" key={ownedItemKey}><div className="upgrade-item-identity"><EntityTooltip model={itemTooltip(variant)} /><strong>{variant.displayName ?? t("tooltip.itemTitle", { id: variant.sourceItemId })}</strong></div><span>{t("topGear.currentRankValue", { rank: variant.upgrade?.currentRank ?? variant.rank })}</span><label>{t("topGear.targetRank")}<input min={variant.upgrade?.currentRank ?? variant.rank} type="number" placeholder={variant.upgrade?.maxRank == null ? t("topGear.unconfirmed") : String(variant.upgrade.maxRank)} value={request.targetRankOverrides[ownedItemKey] ?? ""} onChange={(event) => updateTargetRank(ownedItemKey, event.target.value)} /></label><small>{t(`topGear.metadataSource_${variant.upgrade?.source ?? "unknown"}`)}</small></div>)}</div></details> : null}
-        {request.upgradeMetadata ? <details className="inline-disclosure"><summary>{t("topGear.importedUpgradeMetadata")}</summary><pre>{Object.entries(request.upgradeMetadata.rawFields).map(([key, value]) => `${key}=${value}`).join("\n")}</pre><label className="checkbox-line"><input checked={request.upgradeMetadataConfirmed} type="checkbox" onChange={(event) => { setRequest({ ...request, upgradeMetadataConfirmed: event.target.checked }); setPreview(null); }} /><span><strong>{t("topGear.confirmUpgradeMetadata")}</strong><small>{t("topGear.confirmUpgradeMetadataHelp")}</small></span></label></details> : null}
+        {request.upgradeMetadata ? <details className="inline-disclosure"><summary>{t("topGear.importedUpgradeMetadata")}</summary><pre>{[...Object.entries(request.upgradeMetadata.rawFields).map(([key, value]) => `${key}=${value}`), ...request.upgradeMetadata.itemUpgradePaths.map((path) => `line ${path.sourceLine} · ${path.slot} · id=${path.itemId} · upgrade_levels=${path.raw}`)].join("\n")}</pre>{request.upgradeMetadata.itemUpgradeDiagnostics.length > 0 ? <ul className="constraint-list">{request.upgradeMetadata.itemUpgradeDiagnostics.map((diagnostic, index) => <li key={`${diagnostic.sourceLine}-${index}`}>{t("topGear.upgradeDiagnostic", { line: diagnostic.sourceLine, code: diagnostic.code })}</li>)}</ul> : null}<label className="checkbox-line"><input checked={request.upgradeMetadataConfirmed} type="checkbox" onChange={(event) => { setRequest({ ...request, upgradeMetadataConfirmed: event.target.checked }); setPreview(null); }} /><span><strong>{t("topGear.confirmUpgradeMetadata")}</strong><small>{t("topGear.confirmUpgradeMetadataHelp")}</small></span></label></details> : null}
       </section>
 
       <div className="top-gear-grid">
         {request.enhancementPolicy === "budget_constrained" ? <section className="settings-form" aria-labelledby="budget-heading">
-          <h2 id="budget-heading"><ShieldCheck aria-hidden="true" size={18} />{t("topGear.budget")}</h2>
-          {(["champion_mistcrest", "hero_mistcrest", "myth_mistcrest", "spark_of_tides"] as const).map((currency) => <div className="currency-row" key={currency}>
+          <div className="section-heading compact-section-heading"><h2 id="budget-heading"><ShieldCheck aria-hidden="true" size={18} />{t("topGear.budget")}</h2><button className="secondary-button" type="button" onClick={maximizeResources}>{t("topGear.maxAll")}</button></div>
+          {budgetCurrencies.map((currency) => <div className="currency-row" key={currency}>
             <strong>{t(`topGear.${currency}`)}</strong>
             <label>{t("topGear.balance")}<input min={0} type="number" value={request.balances[currency] ?? 0} onChange={(event) => updateCurrency("balances", currency, Number(event.target.value))} /></label>
             <label>{t("topGear.reserve")}<input min={0} type="number" value={request.reserves[currency] ?? 0} onChange={(event) => updateCurrency("reserves", currency, Number(event.target.value))} /></label>
+            <div className="resource-quick-actions" role="group" aria-label={t("topGear.currencyQuickActions", { currency: t(`topGear.${currency}`) })}>
+              <button className="compact-button" type="button" onClick={() => updateCurrency("balances", currency, (request.balances[currency] ?? 0) + 10)}>+10</button>
+              <button className="compact-button" type="button" onClick={() => updateCurrency("balances", currency, (request.balances[currency] ?? 0) + 100)}>+100</button>
+              <button className="compact-button" type="button" onClick={() => updateCurrency("balances", currency, unlimitedResourceValue)}>{t("topGear.max")}</button>
+            </div>
           </div>)}
           <p className="safe-note">{t("topGear.currencyNote")}</p>
+          {!hasCostedUpgradeCandidates ? <p className="safe-note resource-warning">{t("topGear.noCostedUpgradeCandidates")}</p> : null}
         </section> : null}
 
         <section className="settings-form" aria-labelledby="precision-heading">
@@ -364,6 +416,8 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
           <label>{t("topGear.enchant")}<input inputMode="numeric" value={draft.enchantId} onChange={(event) => setDraft({ ...draft, enchantId: event.target.value })} /></label>
           <label>{t("topGear.rank")}<input min={0} type="number" value={draft.rank} onChange={(event) => setDraft({ ...draft, rank: Number(event.target.value) })} /></label>
           <label>{t("topGear.itemLevel")}<input inputMode="numeric" value={draft.itemLevel} onChange={(event) => setDraft({ ...draft, itemLevel: event.target.value })} /></label>
+          <label>{t("topGear.effectiveAdventurerMistcrest")}<input min={0} type="number" value={draft.adventurerMistcrest} onChange={(event) => setDraft({ ...draft, adventurerMistcrest: Number(event.target.value) })} /></label>
+          <label>{t("topGear.effectiveVeteranMistcrest")}<input min={0} type="number" value={draft.veteranMistcrest} onChange={(event) => setDraft({ ...draft, veteranMistcrest: Number(event.target.value) })} /></label>
           <label>{t("topGear.effectiveChampionMistcrest")}<input min={0} type="number" value={draft.championMistcrest} onChange={(event) => setDraft({ ...draft, championMistcrest: Number(event.target.value) })} /></label>
           <label>{t("topGear.effectiveHeroMistcrest")}<input min={0} type="number" value={draft.heroMistcrest} onChange={(event) => setDraft({ ...draft, heroMistcrest: Number(event.target.value) })} /></label>
           <label>{t("topGear.effectiveMythMistcrest")}<input min={0} type="number" value={draft.mythMistcrest} onChange={(event) => setDraft({ ...draft, mythMistcrest: Number(event.target.value) })} /></label>

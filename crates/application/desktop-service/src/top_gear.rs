@@ -6,7 +6,9 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use simshredder_domain::{Item, ResultRuntimeIdentity, UpgradeMetadata};
+use simshredder_domain::{
+    Item, ItemUpgradeDiagnostic, ResultRuntimeIdentity, UpgradeCostKind, UpgradeMetadata,
+};
 use simshredder_job_runner::{BatchInput, CancellationToken, EnqueueRequest, PersistentQueue};
 use simshredder_runtime_manager::RuntimeDoctor;
 use simshredder_top_gear::{
@@ -14,8 +16,9 @@ use simshredder_top_gear::{
     ItemVariant, Loadout, PlannedAction, ProfileOptionVariant, RankedLoadout, RejectionBreakdown,
     RuleManifest, SearchPreview, SearchRequest, TalentVariant, UpgradeMetadataSource, WeaponKind,
     build_action_states, build_profileset_stage_input, build_profileset_target_error_input,
-    confidence_survivor_keys, derive_action_plan, generate_loadouts, materialize_upgrade_variants,
-    parse_profileset_results, rank_results,
+    confidence_survivor_keys, derive_action_plan, generate_loadouts,
+    materialize_profile_upgrade_variants, materialize_upgrade_variants, parse_profileset_results,
+    rank_results,
 };
 
 use super::{
@@ -113,6 +116,7 @@ pub struct PreparedTopGear {
     pub loadouts: Vec<Loadout>,
     pub enhancement_policy: EnhancementPolicy,
     pub upgrade_metadata: Option<UpgradeMetadata>,
+    pub detected_balances: BTreeMap<String, u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -137,6 +141,9 @@ pub struct TopGearResultView {
     pub session_id: String,
     pub baseline_key: String,
     pub rule_revision: String,
+    pub game_build: u32,
+    pub upgrade_metadata: Option<UpgradeMetadata>,
+    pub upgrade_metadata_confirmed: bool,
     pub ranked: Vec<RankedLoadout>,
     pub low_job_id: i64,
     pub medium_job_id: Option<i64>,
@@ -186,16 +193,44 @@ pub struct StartedTopGear {
 impl DesktopService {
     pub fn prepare_top_gear(&self, request: &TopGearRequest) -> Result<PreparedTopGear> {
         let (prepared, cpu_plan) = prepare_request(&request.quick)?;
-        let rules = bundled_rules()?;
+        let rules = bundled_rules(request.game_build)?;
         validate_top_gear_request(request)?;
-        let upgrade_metadata = request
+        let mut upgrade_metadata = request
             .upgrade_metadata
             .clone()
             .or_else(|| prepared.profile.upgrade_metadata.clone());
+        if let Some(metadata) = upgrade_metadata.as_mut() {
+            resolve_upgrade_cost_keys(metadata, &rules);
+            if request.upgrade_metadata_confirmed
+                && let Some(provenance) = metadata.provenance.as_mut()
+            {
+                provenance.confirmed_at_unix_seconds =
+                    Some(request.currency_confirmed_at_unix_seconds);
+            }
+        }
+        let detected_balances = detected_upgrade_balances(upgrade_metadata.as_ref(), &rules);
         let variants = if request.variants.is_empty() {
             default_variants(&prepared.profile)
         } else {
             request.variants.clone()
+        };
+        let variants = if request.upgrade_metadata_confirmed {
+            let paths = upgrade_paths_by_owned_item(upgrade_metadata.as_ref());
+            let expansion = materialize_profile_upgrade_variants(&rules, &variants, &paths)?;
+            if let Some(metadata) = upgrade_metadata.as_mut() {
+                metadata
+                    .item_upgrade_diagnostics
+                    .extend(expansion.rejections.into_iter().map(|rejection| {
+                        ItemUpgradeDiagnostic {
+                            source_line: rejection.source_line,
+                            code: rejection.code.into(),
+                            raw: String::new(),
+                        }
+                    }));
+            }
+            expansion.variants
+        } else {
+            variants
         };
         let variants = materialize_upgrade_variants(
             &rules,
@@ -260,6 +295,7 @@ impl DesktopService {
             loadouts: preview.loadouts,
             enhancement_policy: request.enhancement_policy,
             upgrade_metadata,
+            detected_balances,
         })
     }
 
@@ -269,6 +305,10 @@ impl DesktopService {
         runtime: &RuntimeDoctor,
     ) -> Result<StartedTopGear> {
         let preview = self.prepare_top_gear(request)?;
+        let mut effective_request = request.clone();
+        effective_request
+            .upgrade_metadata
+            .clone_from(&preview.upgrade_metadata);
         let (prepared, _) = prepare_request(&request.quick)?;
         let baseline_key = preview
             .loadouts
@@ -282,14 +322,14 @@ impl DesktopService {
             &mut queue,
             &prepared,
             preview.generated_input.as_bytes(),
-            request,
+            &effective_request,
             runtime,
         )?;
         let id = new_session_id()?;
         let session = TopGearSession {
             schema_version: SESSION_SCHEMA_V2,
             id: id.clone(),
-            request: request.clone(),
+            request: effective_request,
             loadouts: preview.loadouts,
             baseline_key,
             low_job_id: enqueued.job_id,
@@ -768,7 +808,10 @@ impl DesktopService {
         Ok(TopGearResultView {
             session_id: session.id,
             baseline_key: session.baseline_key,
-            rule_revision: session.request.rule_revision,
+            rule_revision: session.request.rule_revision.clone(),
+            game_build: session.request.game_build,
+            upgrade_metadata: session.request.upgrade_metadata.clone(),
+            upgrade_metadata_confirmed: session.request.upgrade_metadata_confirmed,
             ranked,
             low_job_id: session.low_job_id,
             medium_job_id: session.medium_job_id,
@@ -899,10 +942,33 @@ impl DesktopService {
     }
 }
 
-fn bundled_rules() -> Result<RuleManifest> {
-    Ok(serde_json::from_str(include_str!(
-        "../../../../resources/rules/12.1.0-69465-v1.json"
-    ))?)
+fn bundled_rules(game_build: u32) -> Result<RuleManifest> {
+    let source = match game_build {
+        69465 => include_str!("../../../../resources/rules/12.1.0-69465-v1.json"),
+        69497 => include_str!("../../../../resources/rules/12.1.0-69497-v1.json"),
+        _ => {
+            return Err(Error::InvalidRequest(format!(
+                "unsupported Gear Optimizer game build: {game_build}"
+            )));
+        }
+    };
+    Ok(serde_json::from_str(source)?)
+}
+
+fn upgrade_paths_by_owned_item(
+    metadata: Option<&UpgradeMetadata>,
+) -> BTreeMap<String, simshredder_domain::ItemUpgradePath> {
+    metadata
+        .into_iter()
+        .flat_map(|metadata| metadata.item_upgrade_paths.iter())
+        .map(|path| {
+            let key = match path.bag_index {
+                Some(index) => format!("bag-{}-{}-{index}", path.slot.simc_token(), path.item_id),
+                None => format!("worn-{}-{}", path.slot.simc_token(), path.item_id),
+            };
+            (key, path.clone())
+        })
+        .collect()
 }
 
 fn validate_top_gear_request(request: &TopGearRequest) -> Result<()> {
@@ -959,6 +1025,63 @@ fn upgrade_high_watermarks(
                     account_item_level: watermark.account_item_level,
                 },
             ))
+        })
+        .collect()
+}
+
+fn resolve_upgrade_cost_keys(metadata: &mut UpgradeMetadata, rules: &RuleManifest) {
+    let contract_matches = metadata.provenance.as_ref().is_some_and(|provenance| {
+        provenance.wow_build == rules.game_build
+            && rules.addon_upgrade_contract_commit.as_deref()
+                == Some(provenance.contract_commit.as_str())
+    });
+    if !contract_matches && !metadata.item_upgrade_paths.is_empty() {
+        metadata
+            .item_upgrade_diagnostics
+            .push(ItemUpgradeDiagnostic {
+                source_line: metadata.item_upgrade_paths[0].source_line,
+                code: "upgrade_contract_mismatch".into(),
+                raw: String::new(),
+            });
+        return;
+    }
+    for cost in metadata
+        .item_upgrade_paths
+        .iter_mut()
+        .flat_map(|path| path.targets.iter_mut())
+        .flat_map(|target| {
+            target
+                .currency_costs
+                .iter_mut()
+                .chain(target.item_costs.iter_mut())
+        })
+    {
+        let prefix = match cost.kind {
+            UpgradeCostKind::Currency => "c",
+            UpgradeCostKind::Item => "i",
+        };
+        let external_key = format!("{prefix}:{}", cost.id);
+        cost.resource_key = rules
+            .upgrade_cost_ids
+            .get(&external_key)
+            .filter(|resource| rules.currency_ids.contains(*resource))
+            .cloned();
+    }
+}
+
+fn detected_upgrade_balances(
+    metadata: Option<&UpgradeMetadata>,
+    rules: &RuleManifest,
+) -> BTreeMap<String, u32> {
+    metadata
+        .into_iter()
+        .flat_map(|metadata| metadata.currencies.iter())
+        .filter_map(|(external_key, amount)| {
+            rules
+                .upgrade_cost_ids
+                .get(external_key)
+                .filter(|resource| rules.currency_ids.contains(*resource))
+                .map(|resource| (resource.clone(), *amount))
         })
         .collect()
 }
@@ -1144,6 +1267,9 @@ fn group_candidates(
             }
             let mut candidate = variant.clone();
             candidate.slot = target;
+            if locked_slots.contains(&target) {
+                candidate.upgrade.max_rank = Some(candidate.upgrade.current_rank);
+            }
             for action in &mut candidate.actions {
                 action.slot = target;
             }
@@ -1179,14 +1305,7 @@ fn enqueue_stage(
     request: &TopGearRequest,
     runtime: &RuntimeDoctor,
 ) -> Result<simshredder_job_runner::EnqueuedJob> {
-    let cache_revision = format!(
-        "{}|policy={:?}|balances={:?}|reserves={:?}|targets={:?}",
-        request.rule_revision,
-        request.enhancement_policy,
-        request.balances,
-        request.reserves,
-        request.target_rank_overrides
-    );
+    let cache_revision = top_gear_cache_revision(request)?;
     Ok(queue.enqueue(EnqueueRequest {
         profile: &prepared.profile,
         batches: vec![BatchInput {
@@ -1200,6 +1319,24 @@ fn enqueue_stage(
         timeout: Duration::from_secs(60 * 60),
         rule_revision: &cache_revision,
     })?)
+}
+
+fn top_gear_cache_revision(request: &TopGearRequest) -> Result<String> {
+    Ok(serde_json::to_string(&serde_json::json!({
+        "schema": 1,
+        "ruleRevision": request.rule_revision,
+        "gameBuild": request.game_build,
+        "enhancementPolicy": request.enhancement_policy,
+        "balances": request.balances,
+        "reserves": request.reserves,
+        "targetRankOverrides": request.target_rank_overrides,
+        "currencyConfirmedAtUnixSeconds": request.currency_confirmed_at_unix_seconds,
+        "upgradeMetadataConfirmed": request.upgrade_metadata_confirmed,
+        "upgradeProvenance": request
+            .upgrade_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.provenance.as_ref()),
+    }))?)
 }
 
 fn match_evaluations(
@@ -1325,6 +1462,54 @@ mod tests {
     }
 
     #[test]
+    fn cache_identity_preserves_build_addon_capture_and_confirmation() {
+        let mut request = request();
+        request.upgrade_metadata = Some(UpgradeMetadata {
+            provenance: Some(simshredder_domain::UpgradeMetadataProvenance {
+                capture_mode: "simc_addon_debug_upgrade_vendor".into(),
+                addon_version: "12.1.0-01".into(),
+                wow_version: "12.1.0".into(),
+                wow_build: 69465,
+                toc: 120100,
+                contract_commit: "305f97962d94428727d6b359199c5f8c2d998c76".into(),
+                confirmed_at_unix_seconds: None,
+            }),
+            ..UpgradeMetadata::default()
+        });
+
+        let unconfirmed = top_gear_cache_revision(&request).unwrap();
+        let identity: serde_json::Value = serde_json::from_str(&unconfirmed).unwrap();
+        assert_eq!(identity["gameBuild"], 69465);
+        assert_eq!(
+            identity["upgradeProvenance"]["captureMode"],
+            "simc_addon_debug_upgrade_vendor"
+        );
+        assert_eq!(identity["upgradeProvenance"]["addonVersion"], "12.1.0-01");
+        assert_eq!(identity["upgradeProvenance"]["wowVersion"], "12.1.0");
+        assert_eq!(identity["upgradeProvenance"]["toc"], 120100);
+        assert_eq!(
+            identity["upgradeProvenance"]["contractCommit"],
+            "305f97962d94428727d6b359199c5f8c2d998c76"
+        );
+        assert_eq!(identity["upgradeMetadataConfirmed"], false);
+
+        request.upgrade_metadata_confirmed = true;
+        request
+            .upgrade_metadata
+            .as_mut()
+            .unwrap()
+            .provenance
+            .as_mut()
+            .unwrap()
+            .confirmed_at_unix_seconds = Some(42);
+        let confirmed = top_gear_cache_revision(&request).unwrap();
+        assert_ne!(confirmed, unconfirmed);
+        let identity: serde_json::Value = serde_json::from_str(&confirmed).unwrap();
+        assert_eq!(identity["upgradeMetadataConfirmed"], true);
+        assert_eq!(identity["upgradeProvenance"]["confirmedAtUnixSeconds"], 42);
+    }
+
+    #[test]
     fn preview_and_execution_counts_share_the_same_iterator() {
         let temporary = tempfile::tempdir().unwrap();
         let service = DesktopService::open(temporary.path()).unwrap();
@@ -1356,6 +1541,154 @@ mod tests {
         assert_eq!(preview.raw_combinations, 1);
         assert_eq!(preview.loadouts.len(), 1);
         assert_eq!(preview.loadouts[0].changed_slots, 0);
+    }
+
+    #[test]
+    fn exact_build_debug_costs_materialize_profile_upgrade_variants() {
+        let temporary = tempfile::tempdir().unwrap();
+        let service = DesktopService::open(temporary.path()).unwrap();
+        let mut request = request();
+        request.quick.format = SourceFormat::AddonExport;
+        request.quick.source = "# SimC Addon 12.1.0-03\n# WoW 12.1.0.69497, TOC 120100\nrogue=Character\nlevel=90\nrace=void_elf\nrole=melee\nspec=subtlety\n# Named Helm (289)\n# upgrade_levels=2:3:c#3444#15#1:i#274476#1#0/3:6:c#3444#20#0:\nhead=,id=250006,ilevel=289\n".into();
+        request.rule_revision = "12.1.0-69497-v1".into();
+        request.game_build = 69497;
+        request.upgrade_metadata_confirmed = true;
+        request.variants.clear();
+        request.talent_loadouts.clear();
+        request.profile_options.clear();
+
+        let preview = service.prepare_top_gear(&request).unwrap();
+        let metadata = preview.upgrade_metadata.unwrap();
+        let costs = &metadata.item_upgrade_paths[0].targets[0];
+        assert_eq!(
+            costs.currency_costs[0].resource_key.as_deref(),
+            Some("champion_mistcrest")
+        );
+        assert_eq!(
+            costs.item_costs[0].resource_key.as_deref(),
+            Some("spark_of_tides")
+        );
+        assert_eq!(preview.variants.len(), 3);
+        assert!(!preview.variants[0].changed);
+        assert_eq!(
+            preview.variants[0].upgrade.source,
+            UpgradeMetadataSource::Profile
+        );
+        assert_eq!(preview.variants[0].rank, 1);
+        assert_eq!(preview.variants[2].simc_options["ilevel"], "295");
+        assert_eq!(preview.variants[2].cost["champion_mistcrest"], 35);
+        assert_eq!(preview.variants[2].cost["spark_of_tides"], 1);
+    }
+
+    #[test]
+    #[ignore = "reads the caller-provided private Retail Live /simc debug fixture"]
+    fn actual_retail_debug_fixture_materializes_every_exact_upgrade_path() {
+        let source = std::fs::read_to_string(
+            std::env::var("SIMSHREDDER_RETAIL_UPGRADE_DEBUG_FIXTURE")
+                .expect("set SIMSHREDDER_RETAIL_UPGRADE_DEBUG_FIXTURE"),
+        )
+        .unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let service = DesktopService::open(temporary.path()).unwrap();
+        let mut request = request();
+        request.quick.format = SourceFormat::AddonExport;
+        request.quick.source = source;
+        request.rule_revision = "12.1.0-69497-v1".into();
+        request.game_build = 69497;
+        request.upgrade_metadata_confirmed = true;
+        request.combination_limit = 2_048;
+        request.variants.clear();
+        request.talent_loadouts.clear();
+        request.profile_options.clear();
+
+        let preview = service.prepare_top_gear(&request).unwrap();
+        let metadata = preview.upgrade_metadata.as_ref().unwrap();
+        assert_eq!(metadata.item_upgrade_paths.len(), 12);
+        assert!(metadata.item_upgrade_diagnostics.is_empty());
+        assert_eq!(preview.detected_balances["adventurer_mistcrest"], 237);
+        assert_eq!(preview.detected_balances["veteran_mistcrest"], 65);
+        assert_eq!(preview.detected_balances["champion_mistcrest"], 134);
+        assert_eq!(preview.detected_balances["hero_mistcrest"], 131);
+        assert_eq!(preview.detected_balances["spark_of_tides"], 1);
+        for path in &metadata.item_upgrade_paths {
+            let owned_key = match path.bag_index {
+                Some(index) => format!("bag-{}-{}-{index}", path.slot.simc_token(), path.item_id),
+                None => format!("worn-{}-{}", path.slot.simc_token(), path.item_id),
+            };
+            let variants = preview
+                .variants
+                .iter()
+                .filter(|variant| variant.upgrade.owned_item_key == owned_key)
+                .collect::<Vec<_>>();
+            assert_eq!(variants.len(), path.targets.len() + 1, "{owned_key}");
+            assert!(
+                variants
+                    .iter()
+                    .all(|variant| variant.upgrade.source == UpgradeMetadataSource::Profile)
+            );
+            let maximum = variants.iter().max_by_key(|variant| variant.rank).unwrap();
+            assert_eq!(
+                maximum.rank,
+                path.targets.last().unwrap().target_level,
+                "{owned_key}"
+            );
+            assert_eq!(maximum.actions.len(), path.targets.len(), "{owned_key}");
+        }
+        assert!(preview.generated_input.contains("profileset."));
+        assert!(preview.generated_input.contains("ilevel="));
+
+        request.enhancement_policy = EnhancementPolicy::BudgetConstrained;
+        request.target_rank_overrides = BTreeMap::from([("worn-head-271483".into(), 6)]);
+        request.balances = BTreeMap::from([("champion_mistcrest".into(), 50)]);
+        request.reserves = BTreeMap::from([("champion_mistcrest".into(), 30)]);
+        request.locked_slots = std::collections::BTreeSet::from([
+            simshredder_domain::GearSlot::Neck,
+            simshredder_domain::GearSlot::Shoulders,
+            simshredder_domain::GearSlot::Back,
+            simshredder_domain::GearSlot::Chest,
+            simshredder_domain::GearSlot::Shirt,
+            simshredder_domain::GearSlot::Tabard,
+            simshredder_domain::GearSlot::Wrists,
+            simshredder_domain::GearSlot::Hands,
+            simshredder_domain::GearSlot::Waist,
+            simshredder_domain::GearSlot::Legs,
+            simshredder_domain::GearSlot::Feet,
+            simshredder_domain::GearSlot::Finger1,
+            simshredder_domain::GearSlot::Finger2,
+            simshredder_domain::GearSlot::Trinket1,
+            simshredder_domain::GearSlot::Trinket2,
+            simshredder_domain::GearSlot::MainHand,
+            simshredder_domain::GearSlot::OffHand,
+        ]);
+        let budget = service.prepare_top_gear(&request).unwrap();
+        assert!(budget.loadouts.iter().any(|loadout| {
+            loadout
+                .cost
+                .get("champion_mistcrest")
+                .copied()
+                .unwrap_or_default()
+                == 20
+        }));
+        assert!(budget.loadouts.iter().all(|loadout| {
+            loadout
+                .cost
+                .get("champion_mistcrest")
+                .copied()
+                .unwrap_or_default()
+                <= 20
+        }));
+
+        request.enhancement_policy = EnhancementPolicy::CurrentState;
+        let current = service.prepare_top_gear(&request).unwrap();
+        assert!(current.loadouts.iter().all(|loadout| {
+            loadout.items.values().all(|item| {
+                item.rank == item.upgrade.current_rank
+                    && item
+                        .actions
+                        .iter()
+                        .all(|action| action.kind != simshredder_top_gear::ChangeKind::Upgrade)
+            })
+        }));
     }
 
     #[test]

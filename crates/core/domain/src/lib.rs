@@ -201,6 +201,78 @@ pub struct UpgradeMetadata {
     pub currencies: BTreeMap<String, u32>,
     pub achievements: Vec<u32>,
     pub slot_high_watermarks: BTreeMap<u8, SlotHighWatermark>,
+    /// Per-owned-item target quotes emitted only by the SimC AddOn debug
+    /// export while an item-upgrade vendor is open.
+    #[serde(default)]
+    pub item_upgrade_paths: Vec<ItemUpgradePath>,
+    /// Invalid or unassociated `upgrade_levels` comments are retained as
+    /// diagnostics. Callers must keep the affected item at its current state.
+    #[serde(default)]
+    pub item_upgrade_diagnostics: Vec<ItemUpgradeDiagnostic>,
+    #[serde(default)]
+    pub provenance: Option<UpgradeMetadataProvenance>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpgradeCostKind {
+    Currency,
+    Item,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeCostQuote {
+    pub kind: UpgradeCostKind,
+    pub id: u32,
+    pub amount: u32,
+    pub discounted: bool,
+    /// Internal resource key resolved by an exact-build rule manifest. Unknown
+    /// IDs remain `None` and must never be charged to a guessed resource.
+    #[serde(default)]
+    pub resource_key: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeTargetQuote {
+    pub target_level: u8,
+    pub item_level_increment: i32,
+    pub currency_costs: Vec<UpgradeCostQuote>,
+    pub item_costs: Vec<UpgradeCostQuote>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemUpgradePath {
+    pub slot: GearSlot,
+    pub bag_index: Option<usize>,
+    pub item_id: u32,
+    pub current_item_level: Option<u32>,
+    pub source_line: usize,
+    pub raw: String,
+    pub targets: Vec<UpgradeTargetQuote>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemUpgradeDiagnostic {
+    pub source_line: usize,
+    pub code: String,
+    pub raw: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeMetadataProvenance {
+    pub capture_mode: String,
+    pub addon_version: String,
+    pub wow_version: String,
+    pub wow_build: u32,
+    pub toc: u32,
+    pub contract_commit: String,
+    #[serde(default)]
+    pub confirmed_at_unix_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

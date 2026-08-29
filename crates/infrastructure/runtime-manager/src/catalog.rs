@@ -333,6 +333,7 @@ pub fn download_production_catalog() -> Result<Vec<u8>> {
             "production catalog response came from an untrusted URL".into(),
         ));
     }
+    reject_catalog_http_status(response.status())?;
     let mut response = response
         .error_for_status()
         .map_err(|error| Error::CatalogDownload(error.to_string()))?;
@@ -356,6 +357,16 @@ pub fn download_production_catalog() -> Result<Vec<u8>> {
         ));
     }
     Ok(bytes)
+}
+
+fn reject_catalog_http_status(status: reqwest::StatusCode) -> Result<()> {
+    if !status.is_success() {
+        return Err(Error::CatalogDownload(format!(
+            "production catalog returned HTTP {}",
+            status.as_u16()
+        )));
+    }
+    Ok(())
 }
 
 fn allowed_catalog_redirect(previous: &[Url], target: &Url) -> bool {
@@ -991,5 +1002,17 @@ mod tests {
         )
         .unwrap();
         assert!(!allowed_catalog_redirect(&[wrong_source], &asset));
+    }
+
+    #[test]
+    fn classifies_missing_and_gone_production_catalog_endpoints() {
+        for status in [reqwest::StatusCode::NOT_FOUND, reqwest::StatusCode::GONE] {
+            assert!(matches!(
+                reject_catalog_http_status(status),
+                Err(Error::CatalogDownload(message))
+                    if message == format!("production catalog returned HTTP {}", status.as_u16())
+            ));
+        }
+        reject_catalog_http_status(reqwest::StatusCode::OK).unwrap();
     }
 }

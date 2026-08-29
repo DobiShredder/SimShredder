@@ -18,7 +18,7 @@ import { useTranslation } from "react-i18next";
 import type { SupportedLocale } from "./i18n";
 import { quickDelete, quickJobs as loadQuickJobs, quickRecover, type JobView, type PreparedQuickSim, type QuickSimRequest } from "./quick";
 import { sameRun, type RunReference } from "./runs";
-import { formatRuntimeDataDate, runtimeCheckUpdates, runtimeInstallLatest, runtimeStatus, type RuntimeView } from "./runtime";
+import { formatRuntimeDataDate, formatRuntimeError, runtimeCheckUpdates, runtimeInstallLatest, runtimeStatus, type RuntimeView } from "./runtime";
 import { ImportPage } from "./screens/ImportPage";
 import { HistoryPage } from "./screens/HistoryPage";
 import { JobsPage } from "./screens/JobsPage";
@@ -134,7 +134,7 @@ export function App() {
       setRuntime(await runtimeInstallLatest());
       setRuntimeUpdate(null);
     } catch (reason) {
-      setRuntimeUpdateError(String(reason));
+      setRuntimeUpdateError(formatRuntimeError(reason, t));
     } finally {
       setRuntimeUpdateBusy(false);
     }

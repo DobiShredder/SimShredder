@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use simshredder_domain::GearSlot;
+use simshredder_domain::{GearSlot, ItemUpgradePath};
 use thiserror::Error;
 
 pub type CostVector = BTreeMap<String, u32>;
@@ -28,6 +28,40 @@ pub struct RuleManifest {
     pub allowed_enchant_slots: BTreeSet<GearSlot>,
     #[serde(default)]
     pub upgrade_tracks: BTreeMap<String, UpgradeTrackRule>,
+    /// Exact SimC AddOn cost token (`c:<id>` or `i:<id>`) to internal resource
+    /// key mapping for this game build. Missing IDs intentionally remain opaque.
+    #[serde(default)]
+    pub upgrade_cost_ids: BTreeMap<String, String>,
+    #[serde(default)]
+    pub addon_upgrade_contract_commit: Option<String>,
+    #[serde(default)]
+    pub addon_upgrade_target_semantics: Option<AddonUpgradeTargetSemantics>,
+    #[serde(default)]
+    pub addon_upgrade_cost_semantics: Option<AddonUpgradeCostSemantics>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AddonUpgradeTargetSemantics {
+    FutureConsecutiveRanks,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AddonUpgradeCostSemantics {
+    EdgeFromPrevious,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProfileUpgradeRejection {
+    pub source_line: usize,
+    pub code: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProfileUpgradeExpansion {
+    pub variants: Vec<ItemVariant>,
+    pub rejections: Vec<ProfileUpgradeRejection>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -654,6 +688,184 @@ fn policy_target_rank(item: &ItemVariant, target_override: Option<&u8>) -> u8 {
         .copied()
         .or(item.upgrade.max_rank)
         .unwrap_or(item.upgrade.current_rank)
+}
+
+/// Expands the exact per-item future-rank quotes emitted by a supported SimC
+/// AddOn `/simc debug` contract. A malformed or incompletely mapped path is
+/// rejected per owned item and leaves that item at its imported current state.
+pub fn materialize_profile_upgrade_variants(
+    rules: &RuleManifest,
+    variants: &[ItemVariant],
+    paths: &BTreeMap<String, ItemUpgradePath>,
+) -> Result<ProfileUpgradeExpansion> {
+    let mut expanded = variants.to_vec();
+    let mut rejections = Vec::new();
+    let semantics_match = rules.addon_upgrade_target_semantics
+        == Some(AddonUpgradeTargetSemantics::FutureConsecutiveRanks)
+        && rules.addon_upgrade_cost_semantics == Some(AddonUpgradeCostSemantics::EdgeFromPrevious);
+
+    for (owned_key, path) in paths {
+        let matching = variants
+            .iter()
+            .filter(|variant| owned_item_key(variant) == *owned_key)
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            rejections.push(ProfileUpgradeRejection {
+                source_line: path.source_line,
+                code: "upgrade_owned_item_missing",
+            });
+            continue;
+        }
+        if matching
+            .iter()
+            .map(|variant| variant.rank)
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 1
+        {
+            continue;
+        }
+        let base = matching[0];
+        if base.upgrade.source != UpgradeMetadataSource::Unknown {
+            continue;
+        }
+        let Some(current_item_level) = path.current_item_level else {
+            rejections.push(ProfileUpgradeRejection {
+                source_line: path.source_line,
+                code: "upgrade_current_item_level_missing",
+            });
+            continue;
+        };
+        let Some(first) = path.targets.first() else {
+            rejections.push(ProfileUpgradeRejection {
+                source_line: path.source_line,
+                code: "upgrade_targets_empty",
+            });
+            continue;
+        };
+        let Some(current_rank) = first.target_level.checked_sub(1) else {
+            rejections.push(ProfileUpgradeRejection {
+                source_line: path.source_line,
+                code: "upgrade_current_rank_invalid",
+            });
+            continue;
+        };
+        let consecutive = path.targets.iter().enumerate().all(|(index, target)| {
+            usize::from(target.target_level) == usize::from(first.target_level) + index
+        });
+        let levels = path
+            .targets
+            .iter()
+            .map(|target| {
+                i64::from(current_item_level)
+                    .checked_add(i64::from(target.item_level_increment))
+                    .and_then(|level| u32::try_from(level).ok())
+            })
+            .collect::<Option<Vec<_>>>();
+        let levels_valid = levels.as_ref().is_some_and(|levels| {
+            levels
+                .first()
+                .is_some_and(|level| *level > current_item_level)
+                && levels.windows(2).all(|pair| pair[1] > pair[0])
+        });
+        let costs_mapped = path.targets.iter().all(|target| {
+            target
+                .currency_costs
+                .iter()
+                .chain(target.item_costs.iter())
+                .all(|cost| {
+                    cost.resource_key
+                        .as_ref()
+                        .is_some_and(|key| rules.currency_ids.contains(key))
+                })
+        });
+        if !semantics_match || !consecutive || !levels_valid || !costs_mapped {
+            let code = if !semantics_match {
+                "upgrade_semantics_unverified"
+            } else if !consecutive {
+                "upgrade_targets_nonconsecutive"
+            } else if !levels_valid {
+                "upgrade_item_levels_invalid"
+            } else {
+                "upgrade_cost_id_unknown"
+            };
+            rejections.push(ProfileUpgradeRejection {
+                source_line: path.source_line,
+                code,
+            });
+            continue;
+        }
+        let levels = levels.expect("validated item levels");
+        let maximum = path.targets.last().expect("non-empty targets").target_level;
+        for variant in expanded
+            .iter_mut()
+            .filter(|variant| owned_item_key(variant) == *owned_key)
+        {
+            variant.rank = current_rank;
+            variant.upgrade.current_rank = current_rank;
+            variant.upgrade.max_rank = Some(maximum);
+            variant.upgrade.source = UpgradeMetadataSource::Profile;
+        }
+
+        let mut previous = base.clone();
+        previous.rank = current_rank;
+        previous.upgrade.current_rank = current_rank;
+        previous.upgrade.max_rank = Some(maximum);
+        previous.upgrade.source = UpgradeMetadataSource::Profile;
+        for (target, item_level) in path.targets.iter().zip(levels) {
+            let mut edge_cost = CostVector::new();
+            for quote in target.currency_costs.iter().chain(target.item_costs.iter()) {
+                let key = quote
+                    .resource_key
+                    .as_ref()
+                    .expect("mapped costs were validated");
+                let next = edge_cost
+                    .get(key)
+                    .copied()
+                    .unwrap_or_default()
+                    .checked_add(quote.amount)
+                    .ok_or_else(|| Error::Invalid("upgrade edge cost overflow".into()))?;
+                edge_cost.insert(key.clone(), next);
+            }
+            let mut next = previous.clone();
+            next.key = format!("{}-profile-rank-{}", base.key, target.target_level);
+            next.rank = target.target_level;
+            next.changed = true;
+            next.simc_options
+                .insert("ilevel".into(), item_level.to_string());
+            add_cost(&mut next.cost, &edge_cost)?;
+            let dependency = next
+                .actions
+                .iter()
+                .rev()
+                .find(|action| action.kind == ChangeKind::Upgrade)
+                .map(|action| action.id.clone())
+                .into_iter()
+                .collect();
+            next.actions.push(UpgradeAction {
+                id: format!("upgrade-{owned_key}-rank-{}", target.target_level),
+                label: format!("Upgrade to rank {}", target.target_level),
+                kind: ChangeKind::Upgrade,
+                cost: edge_cost,
+                depends_on: dependency,
+                from_rank: Some(previous.rank),
+                to_rank: Some(target.target_level),
+                slot: base.slot,
+                source_item_id: base.source_item_id,
+                simc_options_patch: BTreeMap::from([("ilevel".into(), item_level.to_string())]),
+            });
+            next.upgrade.current_rank = current_rank;
+            next.upgrade.max_rank = Some(maximum);
+            next.upgrade.source = UpgradeMetadataSource::Profile;
+            expanded.push(next.clone());
+            previous = next;
+        }
+    }
+
+    Ok(ProfileUpgradeExpansion {
+        variants: expanded,
+        rejections,
+    })
 }
 
 /// Expands explicitly identified owned items from an exact-build upgrade rule.
@@ -1895,6 +2107,10 @@ mod tests {
                 GearSlot::MainHand,
             ]),
             upgrade_tracks: BTreeMap::new(),
+            upgrade_cost_ids: BTreeMap::new(),
+            addon_upgrade_contract_commit: None,
+            addon_upgrade_target_semantics: None,
+            addon_upgrade_cost_semantics: None,
         }
     }
 
@@ -1907,6 +2123,107 @@ mod tests {
         assert_eq!(manifest.schema_version, 1);
         assert_eq!(manifest.revision, "12.1.0-69465-v1");
         assert_eq!(manifest.game_build, 69465);
+        assert_eq!(manifest.upgrade_cost_ids["c:3444"], "champion_mistcrest");
+    }
+
+    #[test]
+    fn profile_upgrade_quotes_materialize_consecutive_levels_and_cumulative_costs() {
+        let mut manifest = rules();
+        manifest.currency_ids = BTreeSet::from(["champion_mistcrest".into()]);
+        manifest.addon_upgrade_target_semantics =
+            Some(AddonUpgradeTargetSemantics::FutureConsecutiveRanks);
+        manifest.addon_upgrade_cost_semantics = Some(AddonUpgradeCostSemantics::EdgeFromPrevious);
+        let mut base = upgrade_variant("worn-head-271483", 0, 0, false);
+        base.source_item_id = 271483;
+        base.upgrade.owned_item_key = "worn-head-271483".into();
+        base.upgrade.source = UpgradeMetadataSource::Unknown;
+        let quote =
+            |target_level, item_level_increment, amount| simshredder_domain::UpgradeTargetQuote {
+                target_level,
+                item_level_increment,
+                currency_costs: vec![simshredder_domain::UpgradeCostQuote {
+                    kind: simshredder_domain::UpgradeCostKind::Currency,
+                    id: 3444,
+                    amount,
+                    discounted: false,
+                    resource_key: Some("champion_mistcrest".into()),
+                }],
+                item_costs: Vec::new(),
+            };
+        let paths = BTreeMap::from([(
+            "worn-head-271483".into(),
+            ItemUpgradePath {
+                slot: GearSlot::Head,
+                bag_index: None,
+                item_id: 271483,
+                current_item_level: Some(298),
+                source_line: 30,
+                raw: String::new(),
+                targets: vec![quote(4, 4, 20), quote(5, 7, 20), quote(6, 10, 20)],
+            },
+        )]);
+
+        let expansion = materialize_profile_upgrade_variants(&manifest, &[base], &paths).unwrap();
+        assert!(expansion.rejections.is_empty());
+        assert_eq!(
+            expansion
+                .variants
+                .iter()
+                .map(|variant| variant.rank)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 5, 6]
+        );
+        assert_eq!(expansion.variants[3].simc_options["ilevel"], "308");
+        assert_eq!(expansion.variants[3].cost["champion_mistcrest"], 60);
+        assert_eq!(expansion.variants[3].actions.len(), 3);
+        assert_eq!(
+            expansion.variants[3].actions[2].depends_on,
+            vec!["upgrade-worn-head-271483-rank-5"]
+        );
+        assert_eq!(
+            expansion.variants[0].upgrade.source,
+            UpgradeMetadataSource::Profile
+        );
+    }
+
+    #[test]
+    fn profile_upgrade_quotes_fail_closed_when_a_cost_id_is_unmapped() {
+        let mut manifest = rules();
+        manifest.addon_upgrade_target_semantics =
+            Some(AddonUpgradeTargetSemantics::FutureConsecutiveRanks);
+        manifest.addon_upgrade_cost_semantics = Some(AddonUpgradeCostSemantics::EdgeFromPrevious);
+        let mut base = upgrade_variant("worn-head-1", 0, 0, false);
+        base.upgrade.owned_item_key = "worn-head-1".into();
+        base.upgrade.source = UpgradeMetadataSource::Unknown;
+        let paths = BTreeMap::from([(
+            "worn-head-1".into(),
+            ItemUpgradePath {
+                slot: GearSlot::Head,
+                bag_index: None,
+                item_id: 1,
+                current_item_level: Some(298),
+                source_line: 8,
+                raw: String::new(),
+                targets: vec![simshredder_domain::UpgradeTargetQuote {
+                    target_level: 4,
+                    item_level_increment: 4,
+                    currency_costs: vec![simshredder_domain::UpgradeCostQuote {
+                        kind: simshredder_domain::UpgradeCostKind::Currency,
+                        id: 9999,
+                        amount: 20,
+                        discounted: false,
+                        resource_key: None,
+                    }],
+                    item_costs: Vec::new(),
+                }],
+            },
+        )]);
+
+        let expansion =
+            materialize_profile_upgrade_variants(&manifest, std::slice::from_ref(&base), &paths)
+                .unwrap();
+        assert_eq!(expansion.variants, vec![base]);
+        assert_eq!(expansion.rejections[0].code, "upgrade_cost_id_unknown");
     }
 
     fn variant(key: &str, slot: GearSlot, cost: u32) -> ItemVariant {

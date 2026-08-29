@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use reqwest::{Url, blocking::Client, redirect::Policy};
+use reqwest::{StatusCode, Url, blocking::Client, redirect::Policy};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -140,7 +140,9 @@ pub fn download_verified(manifest: &RuntimeManifest, directory: &Path) -> Result
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(10 * 60))
         .build()?;
-    let mut response = client.get(url).send()?.error_for_status()?;
+    let response = client.get(url.clone()).send()?;
+    reject_removed_artifact(response.status(), &url)?;
+    let mut response = response.error_for_status()?;
     if let Some(length) = response.content_length()
         && length != manifest.size
     {
@@ -191,6 +193,41 @@ pub fn download_verified(manifest: &RuntimeManifest, directory: &Path) -> Result
         .map_err(|error| error.error)?;
     verify_artifact(manifest, &destination)?;
     Ok(destination)
+}
+
+/// Confirms that an exact signed nightly artifact still exists without
+/// downloading its body. Nightly files are routinely replaced upstream, so a
+/// signed catalog can remain cryptographically valid after its artifact has
+/// disappeared.
+pub fn check_artifact_availability(manifest: &RuntimeManifest) -> Result<()> {
+    let url = manifest.validate()?;
+    let client = Client::builder()
+        .redirect(Policy::none())
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
+        .build()?;
+    let response = client.head(url.clone()).send()?;
+    reject_removed_artifact(response.status(), &url)?;
+    let response = response.error_for_status()?;
+    if let Some(length) = response.content_length()
+        && length != manifest.size
+    {
+        return Err(Error::SizeMismatch {
+            expected: manifest.size,
+            actual: length,
+        });
+    }
+    Ok(())
+}
+
+fn reject_removed_artifact(status: StatusCode, url: &Url) -> Result<()> {
+    if matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE) {
+        return Err(Error::ArtifactUnavailable {
+            status: status.as_u16(),
+            url: url.to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn reusable_cached_artifact(manifest: &RuntimeManifest, destination: &Path) -> Result<bool> {
@@ -336,5 +373,37 @@ mod tests {
             sha256: "c212ca4c865819dae06d33c46bd2c01db6fbe5f3abc271577c06046b6ff40c30".into(),
         };
         manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn head_and_get_share_404_and_410_removed_artifact_classification() {
+        let url = Url::parse(
+            "http://downloads.simulationcraft.org/nightly/simc-1210-01-macos-3487fce.dmg",
+        )
+        .unwrap();
+        for expected in [StatusCode::NOT_FOUND, StatusCode::GONE] {
+            assert!(matches!(
+                reject_removed_artifact(expected, &url),
+                Err(Error::ArtifactUnavailable { status, .. }) if status == expected.as_u16()
+            ));
+        }
+        reject_removed_artifact(StatusCode::OK, &url).unwrap();
+    }
+
+    #[test]
+    fn removed_candidate_does_not_modify_an_existing_verified_cache_entry() {
+        let temporary = tempfile::tempdir().unwrap();
+        let destination = temporary.path().join("simc-1210-01-macos-3487fce.dmg");
+        fs::write(&destination, b"verified cache").unwrap();
+        let cached = manifest(sha256_file(&destination).unwrap(), 14);
+        verify_artifact(&cached, &destination).unwrap();
+
+        let url = cached.validate().unwrap();
+        assert!(matches!(
+            reject_removed_artifact(StatusCode::NOT_FOUND, &url),
+            Err(Error::ArtifactUnavailable { status: 404, .. })
+        ));
+        verify_artifact(&cached, &destination).unwrap();
+        assert_eq!(fs::read(destination).unwrap(), b"verified cache");
     }
 }

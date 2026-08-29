@@ -118,6 +118,7 @@ fn addon_and_simc_file_run_to_normalized_immutable_artifacts() {
         source_kind: SourceKind::SimcFile,
         source_bytes: b"not a valid SimC profile\n",
         generated_bytes: b"not a valid SimC profile\n",
+        rule_revision: None,
         output_directory: &failed_directory,
         timeout: Duration::from_secs(60),
     })

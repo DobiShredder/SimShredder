@@ -16,7 +16,9 @@ pub use discovery::{NightlyAsset, discover_latest_macos};
 pub use error::{Error, Result};
 #[cfg(target_os = "macos")]
 pub use macos::{discover_macos_executables, install_macos_dmg, validate_macos_binary};
-pub use manifest::{RuntimeManifest, download_verified, sha256_file, verify_artifact};
+pub use manifest::{
+    RuntimeManifest, check_artifact_availability, download_verified, sha256_file, verify_artifact,
+};
 pub use process::{
     CancelOutput, LogChunk, ProcessControl, ProcessOutput, ProcessStream, SimcIdentity,
     cancel_after, parse_identity, run_with_control, run_with_timeout,

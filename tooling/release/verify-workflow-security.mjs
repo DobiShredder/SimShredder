@@ -39,8 +39,13 @@ for (const name of files) {
     if (!source.includes("environment: release") || !/^\s*workflow_dispatch\s*:/m.test(source)) {
       throw new Error(`${file} write permission must be behind workflow_dispatch and the release environment`);
     }
-    if (/^\s*(push|pull_request|schedule)\s*:/m.test(source)) {
-      throw new Error(`${file} write permission must not be reachable from automatic events`);
+    const scheduledRuntimeCatalog = name === "publish-runtime-catalog.yml"
+      && /^\s*schedule\s*:/m.test(source)
+      && source.includes("group: production-runtime-catalog")
+      && source.includes("cancel-in-progress: false");
+    if (/^\s*(push|pull_request)\s*:/m.test(source)
+      || (/^\s*schedule\s*:/m.test(source) && !scheduledRuntimeCatalog)) {
+      throw new Error(`${file} write permission must not be reachable from an unauthorized automatic event`);
     }
     if (!source.includes("github.ref == 'refs/heads/master'")) {
       throw new Error(`${file} write permission must be restricted to the master ref`);
@@ -96,8 +101,21 @@ for (const requiredCaptureBoundary of [
   }
 }
 const runtimeCatalogPublisher = await readFile(path.join(workflowDirectory, "publish-runtime-catalog.yml"), "utf8");
-if (!runtimeCatalogPublisher.includes("runs-on: ubuntu-latest")) {
-  throw new Error("runtime catalog publisher must use the platform-neutral Ubuntu runner");
+for (const requiredBoundary of [
+  "runs-on: ubuntu-latest",
+  "workflow_dispatch:",
+  "schedule:",
+  "group: production-runtime-catalog",
+  "needs.discovery.outputs.changed == 'true'",
+  "vars.RUNTIME_CATALOG_PUBLISH_ENABLED == 'true'",
+  "RUNTIME_CATALOG_SIGNING_KEY_PEM: ${{ secrets.RUNTIME_CATALOG_SIGNING_KEY_PEM }}",
+  "trap cleanup EXIT",
+  "publish-runtime-catalog.mjs",
+  "verify-signed-runtime-catalog.mjs",
+]) {
+  if (!runtimeCatalogPublisher.includes(requiredBoundary)) {
+    throw new Error(`runtime catalog publisher is missing required boundary: ${requiredBoundary}`);
+  }
 }
 
 if (actionCount === 0 || checkoutCount === 0) throw new Error("workflow action audit inspected no actions");

@@ -48,6 +48,10 @@ pub struct ArtifactManifest {
     pub executable_sha256: String,
     pub source_sha256: String,
     pub generated_input_sha256: String,
+    /// Exact application rule identity used by queued executions. Direct
+    /// adapter callers may omit it, while persistent queue artifacts require it.
+    #[serde(default)]
+    pub rule_revision: Option<String>,
     pub argv: Vec<String>,
     pub exit_code: Option<i32>,
     pub stdout_truncated: bool,
@@ -62,6 +66,7 @@ pub struct HeadlessRunRequest<'a> {
     pub source_kind: SourceKind,
     pub source_bytes: &'a [u8],
     pub generated_bytes: &'a [u8],
+    pub rule_revision: Option<&'a str>,
     pub output_directory: &'a Path,
     pub timeout: Duration,
 }
@@ -483,6 +488,7 @@ fn build_manifest(
         executable_sha256,
         source_sha256: digest_bytes(request.source_bytes),
         generated_input_sha256: digest_bytes(request.generated_bytes),
+        rule_revision: request.rule_revision.map(str::to_owned),
         argv: vec![
             "generated.simc".into(),
             "json2=result.json".into(),
@@ -573,6 +579,7 @@ mod tests {
             source_kind: SourceKind::SimcFile,
             source_bytes: b"source",
             generated_bytes: b"generated",
+            rule_revision: None,
             output_directory: Path::new("run"),
             timeout: Duration::from_secs(1),
         };
@@ -584,6 +591,45 @@ mod tests {
         assert_eq!(
             digest_bytes(b"fixture"),
             "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d"
+        );
+    }
+
+    #[test]
+    fn sealed_manifest_preserves_the_queue_rule_identity() {
+        let temporary = tempfile::tempdir().unwrap();
+        let request = HeadlessRunRequest {
+            executable: Path::new("simc"),
+            expected_revision: "30555ef",
+            source_kind: SourceKind::SimcFile,
+            source_bytes: b"source",
+            generated_bytes: b"generated",
+            rule_revision: Some("12.1.0-69465-v1|upgrade_provenance=fixture"),
+            output_directory: temporary.path(),
+            timeout: Duration::from_secs(1),
+        };
+        let manifest = build_manifest(
+            &request,
+            SimcIdentity {
+                simc_version: "1210-01".into(),
+                game_version: "12.1.0.69465".into(),
+                channel: "live".into(),
+                hotfix: None,
+            },
+            "a".repeat(64),
+            1,
+            Duration::from_millis(1),
+            Some(0),
+            false,
+            false,
+            RunStatus::Succeeded,
+            None,
+            temporary.path(),
+            Some(2),
+        )
+        .unwrap();
+        assert_eq!(
+            manifest.rule_revision.as_deref(),
+            Some("12.1.0-69465-v1|upgrade_provenance=fixture")
         );
     }
 }

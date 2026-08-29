@@ -235,7 +235,8 @@ describe("supported desktop shell", () => {
     await topGearHeading.waitForDisplayed({ timeout: 60_000 });
     await expect($("h2=정확한 실행 미리보기")).toBeDisplayed();
     await expect($("h2=장비 후보")).toBeDisplayed();
-    await expect($("h2=소모품 및 Omnium Folio")).toBeDisplayed();
+    await expect($("h2=소모품")).toBeDisplayed();
+    await expect($("h2=옴니움 장서")).toBeDisplayed();
     await expect($("h2=특성 로드아웃")).toBeDisplayed();
     await expect($("nav[aria-label='장비 최적화 섹션']")).toBeDisplayed();
     await $(".semantic-icon-item").click();
@@ -263,8 +264,11 @@ describe("supported desktop shell", () => {
     });
     expect(await browser.checkScreen(`top-gear-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(3));
     await browser.execute(() => document.querySelector("#optimizer-consumables")?.scrollIntoView({ block: "start", behavior: "auto" }));
-    await expect($("h2=소모품 및 Omnium Folio")).toBeDisplayed();
+    await expect($("h2=소모품")).toBeDisplayed();
+    await expect($("h2=옴니움 장서")).toBeDisplayed();
     expect(await browser.checkScreen(`top-gear-options-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(3));
+    await browser.execute(() => document.querySelector("#enhancement-policy-heading")?.scrollIntoView({ block: "start", behavior: "auto" }));
+    expect(await browser.execute(() => document.body.textContent?.includes("현재 상태로만") ?? false)).toBe(true);
 
     if (mode === "live") {
       await expect($("//label[contains(.,'장비 강화를 어떻게 비교할까요?')]//select")).toHaveValue("max_potential");

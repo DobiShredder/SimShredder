@@ -6,6 +6,8 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
+    #[error("official SimulationCraft artifact is no longer available (HTTP {status}): {url}")]
+    ArtifactUnavailable { status: u16, url: String },
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("invalid runtime manifest: {0}")]

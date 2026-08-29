@@ -14,13 +14,36 @@ use std::{collections::BTreeMap, str::FromStr};
 
 use regex::Regex;
 use simshredder_domain::{
-    ActionDirective, AddonMetadata, BagItem, CharacterClass, GameChannel, GearSlot, Item, Profile,
-    Role, SimulationOptions, SlotHighWatermark, SourceKind, TalentLoadout, UpgradeMetadata,
+    ActionDirective, AddonMetadata, BagItem, CharacterClass, GameChannel, GearSlot, Item,
+    ItemUpgradeDiagnostic, ItemUpgradePath, Profile, Role, SimulationOptions, SlotHighWatermark,
+    SourceKind, TalentLoadout, UpgradeCostKind, UpgradeCostQuote, UpgradeMetadata,
+    UpgradeMetadataProvenance, UpgradeTargetQuote,
 };
 use thiserror::Error;
 
 pub(crate) const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const MAX_LINE_BYTES: usize = 16 * 1024;
+const MAX_UPGRADE_TARGETS_PER_ITEM: usize = 64;
+const MAX_UPGRADE_COSTS_PER_KIND: usize = 16;
+const SIMC_ADDON_12_1_0_03_UPGRADE_CONTRACT_COMMIT: &str =
+    "d2452dce69276ede2bddf8056baf00288f1d4f2b";
+const SIMC_ADDON_12_1_0_04_UPGRADE_CONTRACT_COMMIT: &str =
+    "305f97962d94428727d6b359199c5f8c2d998c76";
+
+fn addon_upgrade_contract_commit(addon_version: &str) -> Option<&'static str> {
+    match addon_version {
+        "12.1.0-03" => Some(SIMC_ADDON_12_1_0_03_UPGRADE_CONTRACT_COMMIT),
+        "12.1.0-04" => Some(SIMC_ADDON_12_1_0_04_UPGRADE_CONTRACT_COMMIT),
+        _ => None,
+    }
+}
+
+#[derive(Clone)]
+struct PendingUpgradePath {
+    source_line: usize,
+    raw: String,
+    targets: Option<Vec<UpgradeTargetQuote>>,
+}
 
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -87,7 +110,11 @@ pub fn project_profile(document: &SimcDocument, source_kind: SourceKind) -> Resu
     let mut wow_metadata = None;
     let mut in_bag_section = false;
     let mut pending_bag_name = None;
+    let mut pending_bag_item_level = None;
+    let mut pending_bag_upgrade = None;
     let mut pending_equipped_name = None;
+    let mut pending_equipped_item_level = None;
+    let mut pending_equipped_upgrade = None;
     let mut pending_saved_loadout_name = None;
 
     for document_line in &document.lines {
@@ -110,13 +137,26 @@ pub fn project_profile(document: &SimcDocument, source_kind: SourceKind) -> Resu
             continue;
         }
         if line == "### Gear from Bags" {
+            diagnose_unassociated_upgrade(
+                &mut draft.upgrade_metadata,
+                pending_equipped_upgrade.take(),
+            );
             in_bag_section = true;
             pending_bag_name = None;
+            pending_bag_item_level = None;
+            pending_bag_upgrade = None;
             continue;
         }
         if line.starts_with("### ") {
+            diagnose_unassociated_upgrade(&mut draft.upgrade_metadata, pending_bag_upgrade.take());
+            diagnose_unassociated_upgrade(
+                &mut draft.upgrade_metadata,
+                pending_equipped_upgrade.take(),
+            );
             in_bag_section = false;
             pending_bag_name = None;
+            pending_bag_item_level = None;
+            pending_bag_upgrade = None;
             continue;
         }
         if let Some(comment) = line.strip_prefix('#') {
@@ -137,17 +177,43 @@ pub fn project_profile(document: &SimcDocument, source_kind: SourceKind) -> Resu
             }
             if in_bag_section {
                 if comment.is_empty() {
+                    diagnose_unassociated_upgrade(
+                        &mut draft.upgrade_metadata,
+                        pending_bag_upgrade.take(),
+                    );
                     pending_bag_name = None;
+                    pending_bag_item_level = None;
+                    pending_bag_upgrade = None;
+                } else if let Some(raw) = comment.strip_prefix("upgrade_levels=") {
+                    diagnose_unassociated_upgrade(
+                        &mut draft.upgrade_metadata,
+                        pending_bag_upgrade.take(),
+                    );
+                    pending_bag_upgrade = Some(parse_upgrade_path(raw, line_number));
                 } else if let Some((key, value)) = comment.split_once('=') {
                     if let Some(slot) = parse_gear_slot(key.trim()) {
                         let mut item = parse_item(slot, value.trim(), line_number)?;
                         item.name.clone_from(&pending_bag_name);
+                        let bag_index = draft.bag_items.len();
+                        attach_upgrade_path(
+                            &mut draft.upgrade_metadata,
+                            pending_bag_upgrade.take(),
+                            slot,
+                            Some(bag_index),
+                            item.id,
+                            pending_bag_item_level.take(),
+                        );
                         draft.bag_items.push(BagItem {
                             item,
                             name: pending_bag_name.take(),
                         });
                     }
-                } else if !comment.starts_with("upgrade_levels=") {
+                } else {
+                    diagnose_unassociated_upgrade(
+                        &mut draft.upgrade_metadata,
+                        pending_bag_upgrade.take(),
+                    );
+                    pending_bag_item_level = item_level_from_comment(comment);
                     pending_bag_name = Some(if looks_like_item_comment(comment) {
                         item_name_from_comment(comment)
                     } else {
@@ -165,7 +231,18 @@ pub fn project_profile(document: &SimcDocument, source_kind: SourceKind) -> Resu
                         value: value.trim().to_owned(),
                     });
                 } else if looks_like_item_comment(comment) {
+                    diagnose_unassociated_upgrade(
+                        &mut draft.upgrade_metadata,
+                        pending_equipped_upgrade.take(),
+                    );
+                    pending_equipped_item_level = item_level_from_comment(comment);
                     pending_equipped_name = Some(item_name_from_comment(comment));
+                } else if let Some(raw) = comment.strip_prefix("upgrade_levels=") {
+                    diagnose_unassociated_upgrade(
+                        &mut draft.upgrade_metadata,
+                        pending_equipped_upgrade.take(),
+                    );
+                    pending_equipped_upgrade = Some(parse_upgrade_path(raw, line_number));
                 }
             }
             continue;
@@ -186,6 +263,14 @@ pub fn project_profile(document: &SimcDocument, source_kind: SourceKind) -> Resu
         } else if let Some(slot) = parse_gear_slot(key) {
             let mut item = parse_item(slot, value, line_number)?;
             item.name = pending_equipped_name.take();
+            attach_upgrade_path(
+                &mut draft.upgrade_metadata,
+                pending_equipped_upgrade.take(),
+                slot,
+                None,
+                item.id,
+                pending_equipped_item_level.take(),
+            );
             draft.equipped.insert(slot, item);
         } else if key == "level" {
             set_once(
@@ -248,6 +333,9 @@ pub fn project_profile(document: &SimcDocument, source_kind: SourceKind) -> Resu
         }
     }
 
+    diagnose_unassociated_upgrade(&mut draft.upgrade_metadata, pending_bag_upgrade.take());
+    diagnose_unassociated_upgrade(&mut draft.upgrade_metadata, pending_equipped_upgrade.take());
+
     if let (Some(addon_version), Some((wow_version, wow_build, toc))) =
         (addon_version, wow_metadata)
     {
@@ -258,6 +346,45 @@ pub fn project_profile(document: &SimcDocument, source_kind: SourceKind) -> Resu
             wow_build,
             toc,
         });
+        if !draft.upgrade_metadata.item_upgrade_paths.is_empty()
+            || !draft.upgrade_metadata.item_upgrade_diagnostics.is_empty()
+        {
+            let addon_version = draft
+                .addon
+                .as_ref()
+                .expect("just assigned")
+                .addon_version
+                .clone();
+            let contract_commit = addon_upgrade_contract_commit(&addon_version);
+            if contract_commit.is_none() {
+                draft
+                    .upgrade_metadata
+                    .item_upgrade_diagnostics
+                    .push(ItemUpgradeDiagnostic {
+                        source_line: draft
+                            .upgrade_metadata
+                            .item_upgrade_paths
+                            .first()
+                            .map_or(1, |path| path.source_line),
+                        code: "unsupported_upgrade_addon_version".into(),
+                        raw: addon_version.clone(),
+                    });
+            }
+            draft.upgrade_metadata.provenance = Some(UpgradeMetadataProvenance {
+                capture_mode: "simc_addon_debug_upgrade_vendor".into(),
+                addon_version,
+                wow_version: draft
+                    .addon
+                    .as_ref()
+                    .expect("just assigned")
+                    .wow_version
+                    .clone(),
+                wow_build,
+                toc,
+                contract_commit: contract_commit.unwrap_or("unverified").into(),
+                confirmed_at_unix_seconds: None,
+            });
+        }
     } else if source_kind == SourceKind::AddonExport {
         return Err(ParseError::Missing("SimC AddOn and WoW metadata headers"));
     }
@@ -291,11 +418,154 @@ pub fn project_profile(document: &SimcDocument, source_kind: SourceKind) -> Resu
         saved_talent_loadouts: draft.saved_talent_loadouts,
         equipped: draft.equipped,
         bag_items: draft.bag_items,
-        upgrade_metadata: (!draft.upgrade_metadata.raw_fields.is_empty())
-            .then_some(draft.upgrade_metadata),
+        upgrade_metadata: (!draft.upgrade_metadata.raw_fields.is_empty()
+            || !draft.upgrade_metadata.item_upgrade_paths.is_empty()
+            || !draft.upgrade_metadata.item_upgrade_diagnostics.is_empty())
+        .then_some(draft.upgrade_metadata),
         actions: draft.actions,
         simulation: draft.simulation,
     })
+}
+
+fn parse_upgrade_path(raw: &str, line: usize) -> PendingUpgradePath {
+    let parsed = parse_upgrade_targets(raw);
+    PendingUpgradePath {
+        source_line: line,
+        raw: raw.to_owned(),
+        targets: parsed.ok(),
+    }
+}
+
+fn parse_upgrade_targets(raw: &str) -> std::result::Result<Vec<UpgradeTargetQuote>, ()> {
+    let entries = raw.split('/').collect::<Vec<_>>();
+    if entries.is_empty() || entries.len() > MAX_UPGRADE_TARGETS_PER_ITEM {
+        return Err(());
+    }
+    let mut targets = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let parts = entry.split(':').collect::<Vec<_>>();
+        if parts.len() != 4 {
+            return Err(());
+        }
+        let target_level = parts[0]
+            .parse::<u8>()
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or(())?;
+        let item_level_increment = parts[1]
+            .parse::<i32>()
+            .ok()
+            .filter(|value| (-10_000..=10_000).contains(value))
+            .ok_or(())?;
+        let currency_costs = parse_upgrade_costs(parts[2], UpgradeCostKind::Currency)?;
+        let item_costs = parse_upgrade_costs(parts[3], UpgradeCostKind::Item)?;
+        targets.push(UpgradeTargetQuote {
+            target_level,
+            item_level_increment,
+            currency_costs,
+            item_costs,
+        });
+    }
+    if targets
+        .windows(2)
+        .any(|pair| pair[1].target_level <= pair[0].target_level)
+    {
+        return Err(());
+    }
+    Ok(targets)
+}
+
+fn parse_upgrade_costs(
+    raw: &str,
+    expected_kind: UpgradeCostKind,
+) -> std::result::Result<Vec<UpgradeCostQuote>, ()> {
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    let entries = raw.split(',').collect::<Vec<_>>();
+    if entries.len() > MAX_UPGRADE_COSTS_PER_KIND {
+        return Err(());
+    }
+    entries
+        .into_iter()
+        .map(|entry| {
+            let parts = entry.split('#').collect::<Vec<_>>();
+            if parts.len() != 4 {
+                return Err(());
+            }
+            let kind = match parts[0] {
+                "c" => UpgradeCostKind::Currency,
+                "i" => UpgradeCostKind::Item,
+                _ => return Err(()),
+            };
+            if kind != expected_kind {
+                return Err(());
+            }
+            let id = parts[1]
+                .parse::<u32>()
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or(())?;
+            let amount = parts[2].parse::<u32>().map_err(|_| ())?;
+            let discounted = match parts[3] {
+                "0" => false,
+                "1" => true,
+                _ => return Err(()),
+            };
+            Ok(UpgradeCostQuote {
+                kind,
+                id,
+                amount,
+                discounted,
+                resource_key: None,
+            })
+        })
+        .collect()
+}
+
+fn attach_upgrade_path(
+    metadata: &mut UpgradeMetadata,
+    pending: Option<PendingUpgradePath>,
+    slot: GearSlot,
+    bag_index: Option<usize>,
+    item_id: u32,
+    current_item_level: Option<u32>,
+) {
+    let Some(pending) = pending else { return };
+    if let Some(targets) = pending.targets {
+        metadata.item_upgrade_paths.push(ItemUpgradePath {
+            slot,
+            bag_index,
+            item_id,
+            current_item_level,
+            source_line: pending.source_line,
+            raw: pending.raw,
+            targets,
+        });
+    } else {
+        metadata
+            .item_upgrade_diagnostics
+            .push(ItemUpgradeDiagnostic {
+                source_line: pending.source_line,
+                code: "invalid_upgrade_levels".into(),
+                raw: pending.raw,
+            });
+    }
+}
+
+fn diagnose_unassociated_upgrade(
+    metadata: &mut UpgradeMetadata,
+    pending: Option<PendingUpgradePath>,
+) {
+    if let Some(pending) = pending {
+        metadata
+            .item_upgrade_diagnostics
+            .push(ItemUpgradeDiagnostic {
+                source_line: pending.source_line,
+                code: "unassociated_upgrade_levels".into(),
+                raw: pending.raw,
+            });
+    }
 }
 
 fn project_upgrade_metadata(
@@ -379,6 +649,13 @@ fn item_name_from_comment(comment: &str) -> String {
         .rsplit_once(" (")
         .map_or(comment, |(name, _)| name)
         .to_owned()
+}
+
+fn item_level_from_comment(comment: &str) -> Option<u32> {
+    comment
+        .rsplit_once(" (")
+        .and_then(|(_, suffix)| suffix.strip_suffix(')'))
+        .and_then(|value| value.parse().ok())
 }
 
 fn contains_channel_marker(line: &str) -> bool {
@@ -815,6 +1092,57 @@ mod tests {
         assert_eq!(metadata.achievements, vec![40943, 42768]);
         assert_eq!(metadata.slot_high_watermarks[&0].account_item_level, 418);
         assert_eq!(metadata.source_lines["upgrade_currencies"], 8);
+    }
+
+    #[test]
+    fn associates_bounded_debug_upgrade_paths_with_equipped_and_bag_items() {
+        let source = "# SimC Addon 12.1.0-03\n# WoW 12.1.0.69497, TOC 120100\nrogue=Tester\nlevel=90\nrace=human\nrole=attack\nspec=subtlety\n# Equipped Helm (289)\n# upgrade_levels=1:-3:c#3444#5#0:/2:3:c#3444#15#0:i#274476#1#1/3:6:c#3444#30#1:\nhead=,id=250006,ilevel=289\n\n### Gear from Bags\n#\n# Bag Helm (282)\n# upgrade_levels=4:3:c#3445#10#0:\n# head=,id=250007,ilevel=282\n";
+        let profile = parse_addon_export(source).unwrap();
+        let metadata = profile.upgrade_metadata.unwrap();
+        assert_eq!(metadata.item_upgrade_paths.len(), 2);
+        let equipped = &metadata.item_upgrade_paths[0];
+        assert_eq!(equipped.slot, GearSlot::Head);
+        assert_eq!(equipped.bag_index, None);
+        assert_eq!(equipped.item_id, 250006);
+        assert_eq!(equipped.current_item_level, Some(289));
+        assert_eq!(equipped.targets[0].target_level, 1);
+        assert_eq!(equipped.targets[0].item_level_increment, -3);
+        assert_eq!(equipped.targets[1].target_level, 2);
+        assert_eq!(equipped.targets[1].item_level_increment, 3);
+        assert_eq!(equipped.targets[1].currency_costs[0].id, 3444);
+        assert!(!equipped.targets[1].currency_costs[0].discounted);
+        assert_eq!(equipped.targets[1].item_costs[0].id, 274476);
+        assert!(equipped.targets[1].item_costs[0].discounted);
+        assert_eq!(metadata.item_upgrade_paths[1].bag_index, Some(0));
+        assert_eq!(metadata.item_upgrade_paths[1].item_id, 250007);
+        let provenance = metadata.provenance.unwrap();
+        assert_eq!(provenance.capture_mode, "simc_addon_debug_upgrade_vendor");
+        assert_eq!(provenance.wow_build, 69497);
+        assert_eq!(
+            provenance.contract_commit,
+            SIMC_ADDON_12_1_0_03_UPGRADE_CONTRACT_COMMIT
+        );
+    }
+
+    #[test]
+    fn malformed_or_oversized_upgrade_paths_fail_closed_per_item() {
+        let oversized = (1..=65)
+            .map(|level| format!("{level}:1:c#3444#1#0:"))
+            .collect::<Vec<_>>()
+            .join("/");
+        for raw in ["2:3:c#3444#15#maybe:", oversized.as_str()] {
+            let source = format!(
+                "# SimC Addon 12.1.0-03\n# WoW 12.1.0.69497, TOC 120100\nrogue=Tester\nlevel=90\nrace=human\nrole=attack\nspec=subtlety\n# Equipped Helm (289)\n# upgrade_levels={raw}\nhead=,id=250006,ilevel=289\n"
+            );
+            let profile = parse_addon_export(&source).unwrap();
+            let metadata = profile.upgrade_metadata.unwrap();
+            assert!(metadata.item_upgrade_paths.is_empty());
+            assert_eq!(metadata.item_upgrade_diagnostics.len(), 1);
+            assert_eq!(
+                metadata.item_upgrade_diagnostics[0].code,
+                "invalid_upgrade_levels"
+            );
+        }
     }
 
     #[test]

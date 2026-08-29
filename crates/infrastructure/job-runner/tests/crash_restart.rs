@@ -132,6 +132,7 @@ fn write_success_artifacts(attempt: &ClaimedAttempt, directory: &Path) -> String
         executable_sha256: attempt.executable_sha256.clone(),
         source_sha256: digest(&attempt.source_bytes),
         generated_input_sha256: digest(&attempt.generated_bytes),
+        rule_revision: Some(attempt.rule_revision.clone()),
         argv: vec![
             "generated.simc".into(),
             "json2=result.json".into(),

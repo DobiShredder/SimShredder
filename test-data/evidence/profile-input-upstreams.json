@@ -6,8 +6,28 @@
       "repository": "https://github.com/simulationcraft/simc-addon",
       "branch": "master",
       "commit": "305f97962d94428727d6b359199c5f8c2d998c76",
-      "license": "GPL-3.0",
-      "use": "export syntax evidence only; source is not copied"
+      "license": "Unlicense",
+      "use": "SimC AddOn 12.1.0-04 export syntax evidence only; source is not copied"
+    },
+    {
+      "repository": "https://github.com/simulationcraft/simc-addon",
+      "branch": "master",
+      "commit": "d2452dce69276ede2bddf8056baf00288f1d4f2b",
+      "license": "Unlicense",
+      "use": "SimC AddOn 12.1.0-03 upgrade quote grammar and Retail resource-name evidence; source is not copied",
+      "upgrade_function_sha256": "737c5c999477e3ba59d82fb50f986147b67b0691f4f81a1494fc0f2e938f6368",
+      "extras_lua_sha256": "590c4bfd738a4821231fbc9f9c606a28fc6e5b8419ea8e8a0694ebd0067c89bf"
+    },
+    {
+      "repository": "https://github.com/Gethe/wow-ui-source",
+      "branch": "live",
+      "commit": "027d26c3406d3de2cbd2b1f67d468fe033a1bcd4",
+      "license": "Blizzard UI source mirror; evidence only",
+      "use": "C_ItemUpgrade target indexing and per-edge cost accumulation evidence; source is not copied",
+      "item_upgrade_ui_blob": "6ef1e7cbe46f6e55a3ddb67257692885f25eda4b",
+      "item_upgrade_ui_sha256": "386fb0e9dd8347ab6e5e414fd6a9ba029f19391618092a2e2df0abf728b0c337",
+      "documentation_blob": "e9eee8b3eae8226522c30503ce03864c26c5d9d5",
+      "documentation_sha256": "a4f3ada8ba3267e0ce79c9e26e193d53a6daa71b68a691572db8f7f7ca0af5bc"
     },
     {
       "repository": "https://github.com/simulationcraft/simc-profile",

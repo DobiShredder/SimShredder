@@ -26,6 +26,38 @@ export type UpgradeMetadata = {
   currencies: Record<string, number>;
   achievements: number[];
   slotHighWatermarks: Record<string, { slotIndex: number; characterItemLevel: number; accountItemLevel: number }>;
+  itemUpgradePaths: Array<{
+    slot: GearSlot;
+    bagIndex: number | null;
+    itemId: number;
+    currentItemLevel: number | null;
+    sourceLine: number;
+    raw: string;
+    targets: Array<{
+      targetLevel: number;
+      itemLevelIncrement: number;
+      currencyCosts: UpgradeCostQuote[];
+      itemCosts: UpgradeCostQuote[];
+    }>;
+  }>;
+  itemUpgradeDiagnostics: Array<{ sourceLine: number; code: string; raw: string }>;
+  provenance: {
+    captureMode: string;
+    addonVersion: string;
+    wowVersion: string;
+    wowBuild: number;
+    toc: number;
+    contractCommit: string;
+    confirmedAtUnixSeconds: number | null;
+  } | null;
+};
+
+export type UpgradeCostQuote = {
+  kind: "currency" | "item";
+  id: number;
+  amount: number;
+  discounted: boolean;
+  resourceKey: string | null;
 };
 
 export type UpgradeAction = {
@@ -135,6 +167,7 @@ export type PreparedTopGear = {
   loadouts: Loadout[];
   enhancementPolicy: EnhancementPolicy;
   upgradeMetadata: UpgradeMetadata | null;
+  detectedBalances: CostVector;
 };
 
 export type TopGearSessionView = {
@@ -176,6 +209,9 @@ export type TopGearResultView = {
   sessionId: string;
   baselineKey: string;
   ruleRevision: string;
+  gameBuild: number;
+  upgradeMetadata: UpgradeMetadata | null;
+  upgradeMetadataConfirmed: boolean;
   ranked: RankedLoadout[];
   lowJobId: number;
   mediumJobId: number | null;
@@ -204,15 +240,15 @@ export function defaultTopGearRequest(quick: QuickSimRequest): TopGearRequest {
     lockedSlots: [],
     minimumSetPieces: {},
     catalystCharges: 0,
-    balances: { champion_mistcrest: 0, hero_mistcrest: 0, myth_mistcrest: 0, spark_of_tides: 0 },
-    reserves: { champion_mistcrest: 0, hero_mistcrest: 0, myth_mistcrest: 0, spark_of_tides: 0 },
+    balances: { adventurer_mistcrest: 0, veteran_mistcrest: 0, champion_mistcrest: 0, hero_mistcrest: 0, myth_mistcrest: 0, spark_of_tides: 0 },
+    reserves: { adventurer_mistcrest: 0, veteran_mistcrest: 0, champion_mistcrest: 0, hero_mistcrest: 0, myth_mistcrest: 0, spark_of_tides: 0 },
     currencyConfirmedAtUnixSeconds: Math.floor(Date.now() / 1000),
     enhancementPolicy: "max_potential",
     targetRankOverrides: {},
     upgradeMetadata: null,
     upgradeMetadataConfirmed: false,
-    ruleRevision: "12.1.0-69465-v1",
-    gameBuild: 69465,
+    ruleRevision: "12.1.0-69497-v1",
+    gameBuild: 69497,
     combinationLimit: 1_024,
     lowTargetError: 0.01,
     mediumTargetError: 0.002,

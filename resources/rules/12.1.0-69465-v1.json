@@ -8,6 +8,13 @@
   "max_embellishments": 2,
   "max_sockets_per_item": 3,
   "upgrade_tracks": {},
+  "upgrade_cost_ids": {
+    "c:3444": "champion_mistcrest",
+    "c:3445": "hero_mistcrest",
+    "c:3446": "myth_mistcrest",
+    "i:274476": "spark_of_tides"
+  },
+  "addon_upgrade_contract_commit": "305f97962d94428727d6b359199c5f8c2d998c76",
   "allowed_enchant_slots": [
     "back",
     "chest",

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { TFunction } from "i18next";
 
 export type RuntimeRecord = {
   id: string;
@@ -17,6 +18,7 @@ export type RuntimeView = {
   installed: RuntimeRecord[];
   availableVersion: string;
   availableBuild: string;
+  availableConfirmed: boolean;
   updateAvailable: boolean;
   diagnostic: string | null;
 };
@@ -46,4 +48,14 @@ export function formatRuntimeDataDate(value: string | null, locale: string): str
     day: "numeric",
     timeZone: "UTC",
   }).format(new Date(Date.UTC(year, month - 1, day)));
+}
+
+export function formatRuntimeError(reason: unknown, t: TFunction): string {
+  const message = String(reason);
+  const stale = message.match(/SIMSHREDDER_RUNTIME_CATALOG_STALE:([0-9a-f]{7,40})/);
+  if (stale) return t("runtime.catalogStale", { build: stale[1] });
+  if (message.includes("SIMSHREDDER_RUNTIME_NETWORK_UNAVAILABLE|")) return t("runtime.networkUnavailable");
+  if (message.includes("SIMSHREDDER_RUNTIME_CATALOG_UNAVAILABLE|")) return t("runtime.catalogUnavailable");
+  if (message.includes("SIMSHREDDER_RUNTIME_INSTALL_FAILED|")) return t("runtime.installFailed");
+  return message;
 }

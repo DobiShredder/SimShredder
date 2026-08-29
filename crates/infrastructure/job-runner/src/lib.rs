@@ -157,6 +157,7 @@ impl BatchExecutor for SimcBatchExecutor {
                 source_kind: attempt.source_kind,
                 source_bytes: &attempt.source_bytes,
                 generated_bytes: &attempt.generated_bytes,
+                rule_revision: Some(&attempt.rule_revision),
                 output_directory,
                 timeout: Duration::from_millis(attempt.timeout_millis),
             },
@@ -639,6 +640,7 @@ fn cache_matches(attempt: &ClaimedAttempt, manifest: &simc_adapter::ArtifactMani
         && manifest.runtime.simc_version == attempt.simc_version
         && manifest.runtime.game_version == attempt.game_version
         && manifest.normalized_result_schema_version == Some(attempt.normalized_schema_version)
+        && manifest.rule_revision.as_deref() == Some(attempt.rule_revision.as_str())
 }
 
 fn execution_artifacts(

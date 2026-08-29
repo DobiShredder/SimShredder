@@ -4,6 +4,8 @@ import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   formatRuntimeDataDate,
+  formatRuntimeError,
+  runtimeCheckUpdates,
   runtimeInstallLatest,
   runtimeRollback,
   runtimeStatus,
@@ -20,7 +22,7 @@ export function SettingsPage({ initialRuntime, onRuntimeChange }: {
 }) {
   const { t, i18n } = useTranslation();
   const [runtime, setRuntime] = useState<RuntimeView | null>(initialRuntime);
-  const [operation, setOperation] = useState<Operation>("checking");
+  const [operation, setOperation] = useState<Operation>(null);
   const [error, setError] = useState<string | null>(null);
   const [icons, setIcons] = useState<IconCacheStatus | null>(null);
   const [iconBusy, setIconBusy] = useState(false);
@@ -40,24 +42,23 @@ export function SettingsPage({ initialRuntime, onRuntimeChange }: {
     setOperation("checking");
     setError(null);
     try {
-      publishRuntime(await runtimeStatus());
+      publishRuntime(await runtimeCheckUpdates());
     } catch (reason) {
-      setError(String(reason));
+      setError(formatRuntimeError(reason, t));
     } finally {
       setOperation(null);
     }
-  }, [publishRuntime]);
+  }, [publishRuntime, t]);
 
   useEffect(() => setRuntime(initialRuntime), [initialRuntime]);
 
   useEffect(() => {
-    void refresh();
     void iconCacheStatus().then(setIcons).catch((reason) => setIconError(String(reason)));
     void storagePathsGet().then((paths) => {
       setStorage(paths);
       setStorageDraft(paths);
     }).catch((reason) => setStorageError(String(reason)));
-  }, [refresh]);
+  }, []);
 
   const updateStorageDraft = (key: "workspace" | "simulationcraft" | "icons" | "exports", value: string) => {
     setStorageSaved(false);
@@ -99,7 +100,7 @@ export function SettingsPage({ initialRuntime, onRuntimeChange }: {
       try {
         publishRuntime(await runtimeStatus());
       } catch (reason) {
-        setError(String(reason));
+        setError(formatRuntimeError(reason, t));
       }
     } catch (reason) {
       setStorageError(String(reason));
@@ -125,7 +126,7 @@ export function SettingsPage({ initialRuntime, onRuntimeChange }: {
       try {
         publishRuntime(await runtimeStatus());
       } catch (reason) {
-        setError(String(reason));
+        setError(formatRuntimeError(reason, t));
       }
     } catch (reason) {
       setStorageError(String(reason));
@@ -141,7 +142,7 @@ export function SettingsPage({ initialRuntime, onRuntimeChange }: {
       const next = nextOperation === "installing" ? await runtimeInstallLatest() : await runtimeRollback();
       publishRuntime(next);
     } catch (reason) {
-      setError(String(reason));
+      setError(formatRuntimeError(reason, t));
     } finally {
       setOperation(null);
     }
@@ -157,6 +158,7 @@ export function SettingsPage({ initialRuntime, onRuntimeChange }: {
       ? t("runtime.damaged")
       : t("runtime.missing");
   const activeDataDate = formatRuntimeDataDate(runtime?.activeDataDate ?? null, i18n.resolvedLanguage ?? "en");
+  const runtimeDiagnostic = runtime?.diagnostic ? formatRuntimeError(runtime.diagnostic, t) : null;
   const formatBytes = (bytes: number) => `${(bytes / (1024 * 1024)).toLocaleString(undefined, { maximumFractionDigits: 1 })} MiB`;
 
   return (
@@ -188,7 +190,7 @@ export function SettingsPage({ initialRuntime, onRuntimeChange }: {
         <dl className="runtime-details">
           <div>
             <dt>{t("runtime.available")}</dt>
-            <dd>{runtime ? `${runtime.availableVersion} · ${runtime.availableBuild}` : "—"}</dd>
+            <dd>{runtime?.availableConfirmed ? `${runtime.availableVersion} · ${runtime.availableBuild}` : t("runtime.availabilityUnconfirmed")}</dd>
           </div>
           <div>
             <dt>{t("runtime.active")}</dt>
@@ -202,10 +204,10 @@ export function SettingsPage({ initialRuntime, onRuntimeChange }: {
 
         <p className="safe-note"><ShieldCheck aria-hidden="true" size={17} />{t("runtime.noAdmin")}</p>
 
-        {error || runtime?.diagnostic ? (
+        {error || runtimeDiagnostic ? (
           <div className="inline-error" role="alert">
             <strong>{t("runtime.errorTitle")}</strong>
-            <code>{error ?? runtime?.diagnostic}</code>
+            <code>{error ?? runtimeDiagnostic}</code>
           </div>
         ) : null}
 
@@ -217,7 +219,7 @@ export function SettingsPage({ initialRuntime, onRuntimeChange }: {
         ) : null}
 
         <div className="button-row">
-          {runtime?.state !== "ready" || runtime.updateAvailable ? (
+          {runtime?.availableConfirmed && (runtime.state !== "ready" || runtime.updateAvailable) ? (
             <button className="primary-button" disabled={isBusy} type="button" onClick={() => void perform("installing")}>
               <Download aria-hidden="true" size={18} />
               {runtime?.updateAvailable ? t("runtime.update") : t("runtime.install")}

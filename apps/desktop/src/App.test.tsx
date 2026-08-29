@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n, { resources } from "./i18n";
 import { App } from "./App";
 import type { JobView } from "./quick";
+import { formatRuntimeError } from "./runtime";
 import type { TopGearSessionView } from "./topGear";
 
 const { mockInvoke, mockOpen } = vi.hoisted(() => ({ mockInvoke: vi.fn(), mockOpen: vi.fn() }));
@@ -26,6 +27,7 @@ const missingRuntime = {
   installed: [],
   availableVersion: "1210-01",
   availableBuild: "3487fce",
+  availableConfirmed: true,
   updateAvailable: false,
   diagnostic: null,
 } as const;
@@ -123,6 +125,7 @@ const topGearPrepared = {
     omnium_talents: [{ key: "active-omnium", label: "Active", option: "omnium_talents", value: "", changed: false, enabled: true }],
   },
   loadouts: [],
+  detectedBalances: {},
 } as const;
 
 const topGearSession = (stage: "low_precision" | "medium_precision" | "high_precision" | "complete"): TopGearSessionView => ({
@@ -143,6 +146,9 @@ const topGearResultFixture = {
   sessionId: "tg-test",
   baselineKey: "baseline",
   ruleRevision: "12.1.0-69465-v1",
+  gameBuild: 69465,
+  upgradeMetadata: null,
+  upgradeMetadataConfirmed: false,
   ranked: [
     { loadout: { key: "winner", items: { head: topGearPrepared.variants[1] }, cost: { crest: 5 }, changedSlots: 1, changedOptions: 0, talent: { key: "active", label: "Active", option: "talents", value: "ACTIVE", changed: false, enabled: true }, profileOptions: {} }, mean: 123500, meanError: 50, delta: 500, combinedError: 70, equivalentToBaseline: false, paretoOptimal: true, rank: 1 },
     { loadout: { key: "baseline", items: { head: topGearPrepared.variants[0] }, cost: {}, changedSlots: 0, changedOptions: 0, talent: { key: "active", label: "Active", option: "talents", value: "ACTIVE", changed: false, enabled: true }, profileOptions: {} }, mean: 123000, meanError: 50, delta: 0, combinedError: 70, equivalentToBaseline: true, paretoOptimal: false, rank: 2 },
@@ -449,6 +455,31 @@ describe("application shell", () => {
     expect(mockInvoke).toHaveBeenCalledWith("runtime_install_latest");
   });
 
+  it("does not offer a nightly build whose availability was not confirmed", async () => {
+    runtimeStatusResult = {
+      ...readyRuntime,
+      availableConfirmed: false,
+      availableBuild: "removed1",
+      diagnostic: "SIMSHREDDER_RUNTIME_CATALOG_STALE:deadbee|HTTP 404",
+    };
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByText("Not currently available")).toBeVisible();
+    expect(screen.getByText(/Build deadbee was removed from the official nightly server/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Install update" })).not.toBeInTheDocument();
+  });
+
+  it("localizes stable runtime network diagnostics without exposing backend details", () => {
+    expect(formatRuntimeError("SIMSHREDDER_RUNTIME_NETWORK_UNAVAILABLE|connection refused", i18n.t))
+      .toBe("SimulationCraft updates could not be checked because the network is unavailable. The installed build remains active.");
+    expect(formatRuntimeError("SIMSHREDDER_RUNTIME_CATALOG_UNAVAILABLE|HTTP 404", i18n.t))
+      .toBe("The signed SimulationCraft catalog is currently unavailable. The installed build remains active; try again later.");
+    expect(formatRuntimeError("SIMSHREDDER_RUNTIME_INSTALL_FAILED|raw Rust error", i18n.t))
+      .toBe("SimulationCraft could not be installed or verified. The installed build remains active.");
+  });
+
   it("shows the same installed runtime and game-data date on Home and Settings", async () => {
     runtimeStatusResult = readyRuntime;
     const user = userEvent.setup();
@@ -609,19 +640,41 @@ describe("application shell", () => {
     expect(await screen.findByText("Exact execution preview")).toBeVisible();
     expect(screen.getByRole("button", { name: "Add virtual variant" })).toBeEnabled();
     expect(screen.getByRole("heading", { name: "Gear candidates" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Omnium Folio" })).toBeVisible();
     expect(screen.getAllByRole("button", { name: /Show details for .*Helm/ }).length).toBeGreaterThan(0);
     expect(screen.getByRole("checkbox", { name: /Candidate Helm/ })).toBeChecked();
     expect(screen.getAllByText("Trinkets · choose 2")).toHaveLength(2);
     expect(screen.queryByText("Trinket 1")).not.toBeInTheDocument();
     expect(screen.queryByText("Trinket 2")).not.toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /Dungeon/ })).not.toBeChecked();
+    await user.type(screen.getByRole("textbox", { name: "Encoded Omnium talents" }), "123:1/456:2");
+    await user.click(screen.getByRole("button", { name: "Add Folio candidate" }));
+    expect(mockInvoke).toHaveBeenCalledWith("top_gear_prepare", expect.objectContaining({ request: expect.objectContaining({ profileOptions: expect.objectContaining({ omnium_talents: expect.arrayContaining([expect.objectContaining({ value: "123:1/456:2", enabled: true })]) }) }) }));
     const upgradePolicy = screen.getByRole("combobox", { name: "How should item upgrades be compared?" });
     expect(upgradePolicy).toHaveValue("max_potential");
+    expect(screen.getByText(/Open an item upgrade vendor in WoW, run \/simc debug/)).toBeVisible();
     expect(screen.getByText(/Runs automatically at 1%, 0.2%, then 0.05% target error/)).toBeVisible();
     expect(screen.queryByRole("heading", { name: "Confirmed currency budget" })).not.toBeInTheDocument();
     await user.selectOptions(upgradePolicy, "budget_constrained");
     expect(await screen.findByRole("heading", { name: "Confirmed currency budget" })).toBeVisible();
     expect(mockInvoke).toHaveBeenCalledWith("top_gear_prepare", expect.objectContaining({ request: expect.objectContaining({ enhancementPolicy: "budget_constrained" }) }));
+    expect(screen.getByText(/No upgrade candidates with confirmed costs/)).toBeVisible();
+    expect(screen.getByText(/No confirmed catalyst variants/)).toBeVisible();
+    const championActions = screen.getByRole("group", { name: "Champion Mistcrest quick balance actions" });
+    const championRow = championActions.closest(".currency-row") as HTMLElement;
+    const championBalance = within(championRow).getByRole("spinbutton", { name: "Current balance" });
+    await user.click(within(championActions).getByRole("button", { name: "+10" }));
+    expect(championBalance).toHaveValue(10);
+    await user.click(within(championActions).getByRole("button", { name: "+100" }));
+    expect(championBalance).toHaveValue(110);
+    await user.click(within(championActions).getByRole("button", { name: "Max" }));
+    expect(championBalance).toHaveValue(99_999);
+    const catalystInput = screen.getByRole("spinbutton", { name: "Available catalyst charges" });
+    await user.click(within(screen.getByRole("group", { name: "Catalyst charge quick actions" })).getByRole("button", { name: "+1" }));
+    expect(catalystInput).toHaveValue(1);
+    await user.click(screen.getByRole("button", { name: "Max all currencies" }));
+    for (const balance of screen.getAllByRole("spinbutton", { name: "Current balance" })) expect(balance).toHaveValue(99_999);
+    expect(catalystInput).toHaveValue(1);
     await user.click(screen.getByRole("button", { name: "Lock Head" }));
     expect(mockInvoke).toHaveBeenCalledWith("top_gear_prepare", expect.objectContaining({ request: expect.objectContaining({ lockedSlots: ["head"] }) }));
     await user.click(screen.getByRole("button", { name: "Lock Trinkets · choose 2" }));

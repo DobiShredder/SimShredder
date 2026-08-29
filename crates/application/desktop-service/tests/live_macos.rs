@@ -1,14 +1,19 @@
 #![cfg(target_os = "macos")]
 
-use std::{collections::BTreeMap, env, fs, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env, fs,
+    path::PathBuf,
+};
 
 use simc_adapter::{sha256_file, validate_macos_binary};
 use simshredder_desktop_service::{
     CpuChoice, DesktopService, QuickSimRequest, SourceFormat, TopGearRequest,
 };
+use simshredder_domain::GearSlot;
 use simshredder_job_runner::{CancellationToken, DispatchResult};
 use simshredder_runtime_manager::{RuntimeDoctor, RuntimeRecord};
-use simshredder_top_gear::{ChangeKind, UpgradeAction};
+use simshredder_top_gear::{ChangeKind, EnhancementPolicy, UpgradeAction};
 
 fn required_path(name: &str) -> PathBuf {
     env::var_os(name)
@@ -141,8 +146,8 @@ fn top_gear_runs_three_adaptive_stages_through_the_persistent_queue() {
         target_rank_overrides: BTreeMap::new(),
         upgrade_metadata: None,
         upgrade_metadata_confirmed: false,
-        rule_revision: "12.1.0-69465-v1".into(),
-        game_build: 69465,
+        rule_revision: "12.1.0-69497-v1".into(),
+        game_build: 69497,
         combination_limit: 16,
         low_iterations: 100,
         high_iterations: 200,
@@ -280,4 +285,124 @@ fn top_gear_runs_three_adaptive_stages_through_the_persistent_queue() {
             .state,
         "succeeded"
     );
+}
+
+#[test]
+#[ignore = "executes a private Retail /simc debug upgrade path with official SimulationCraft"]
+fn retail_debug_upgrade_path_runs_all_three_stages_with_official_simc() {
+    let executable = required_path("SIMSHREDDER_SIMC");
+    let revision =
+        env::var("SIMSHREDDER_SIMC_REVISION").expect("SIMSHREDDER_SIMC_REVISION must be provided");
+    let identity = validate_macos_binary(&executable).expect("runtime must satisfy the contract");
+    assert_eq!(identity.game_version, "12.1.0.69497");
+    let runtime = RuntimeDoctor {
+        record: RuntimeRecord {
+            id: format!("{}-{revision}", identity.simc_version),
+            simc_version: identity.simc_version.clone(),
+            build: revision,
+            game_version: identity.game_version.clone(),
+            channel: identity.channel.clone(),
+            executable_sha256: sha256_file(&executable).expect("runtime hash must be available"),
+            installed_at_unix_seconds: 1,
+        },
+        executable,
+        identity,
+        healthy: true,
+    };
+    let source = fs::read_to_string(required_path("SIMSHREDDER_RETAIL_UPGRADE_DEBUG_FIXTURE"))
+        .expect("private debug fixture must be readable");
+    let request = TopGearRequest {
+        quick: QuickSimRequest {
+            source,
+            format: SourceFormat::AddonExport,
+            iterations: 100,
+            fixed_time: true,
+            max_time_seconds: 30,
+            vary_combat_length: 0.0,
+            desired_targets: 1,
+            fight_style: "Patchwerk".into(),
+            cpu_preset: CpuChoice::Balanced,
+            analysis: simshredder_desktop_service::AnalysisOptions::default(),
+        },
+        variants: Vec::new(),
+        talent_loadouts: Vec::new(),
+        profile_options: BTreeMap::new(),
+        locked_slots: BTreeSet::from([
+            GearSlot::Neck,
+            GearSlot::Shoulders,
+            GearSlot::Back,
+            GearSlot::Chest,
+            GearSlot::Shirt,
+            GearSlot::Tabard,
+            GearSlot::Wrists,
+            GearSlot::Hands,
+            GearSlot::Waist,
+            GearSlot::Legs,
+            GearSlot::Feet,
+            GearSlot::Finger1,
+            GearSlot::Finger2,
+            GearSlot::Trinket1,
+            GearSlot::Trinket2,
+            GearSlot::MainHand,
+            GearSlot::OffHand,
+        ]),
+        minimum_set_pieces: BTreeMap::new(),
+        catalyst_charges: 0,
+        balances: BTreeMap::new(),
+        reserves: BTreeMap::new(),
+        currency_confirmed_at_unix_seconds: 1,
+        enhancement_policy: EnhancementPolicy::MaxPotential,
+        target_rank_overrides: BTreeMap::from([("worn-head-271483".into(), 4)]),
+        upgrade_metadata: None,
+        upgrade_metadata_confirmed: true,
+        rule_revision: "12.1.0-69497-v1".into(),
+        game_build: 69497,
+        combination_limit: 16,
+        low_iterations: 100,
+        high_iterations: 200,
+        finalist_count: 2,
+        low_target_error: 0.01,
+        medium_target_error: 0.002,
+        high_target_error: 0.0005,
+    };
+    let temporary = tempfile::tempdir().expect("temporary app data must be available");
+    let service = DesktopService::open(temporary.path()).expect("service must open");
+    let preview = service
+        .prepare_top_gear(&request)
+        .expect("actual debug upgrade preview must succeed");
+    assert_eq!(preview.raw_combinations, 2);
+    assert_eq!(preview.valid_combinations, 2);
+    assert_eq!(preview.execution_count, 6);
+    let upgraded = preview
+        .variants
+        .iter()
+        .find(|variant| variant.upgrade.owned_item_key == "worn-head-271483" && variant.rank == 4)
+        .expect("rank-4 profile variant must exist");
+    assert_eq!(upgraded.simc_options["ilevel"], "302");
+    assert_eq!(upgraded.cost["champion_mistcrest"], 20);
+
+    let low = service
+        .start_top_gear(&request, &runtime)
+        .expect("low stage must enqueue");
+    service
+        .run_next(low.token.expect("low token"))
+        .expect("low stage must execute");
+    let medium = service
+        .advance_top_gear(&low.view.id, &runtime)
+        .expect("medium stage must enqueue");
+    service
+        .run_next(medium.token.expect("medium token"))
+        .expect("medium stage must execute");
+    let high = service
+        .advance_top_gear(&low.view.id, &runtime)
+        .expect("high stage must enqueue");
+    service
+        .run_next(high.token.expect("high token"))
+        .expect("high stage must execute");
+    let result = service
+        .top_gear_result(&low.view.id)
+        .expect("actual debug result must normalize");
+    assert_eq!(result.ranked.len(), 2);
+    assert_eq!(result.game_build, 69497);
+    assert!(result.upgrade_metadata_confirmed);
 }

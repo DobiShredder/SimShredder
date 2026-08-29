@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DobiShredder/SimShredder/test-data/fixtures/contracts/retail-upgrade-debug-oracle.schema.json",
+  "title": "Private Retail upgrade-vendor observation oracle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "capturedAt",
+    "addonContractCommit",
+    "reportedCostSemantics",
+    "evidence",
+    "items"
+  ],
+  "properties": {
+    "schema": { "const": 1 },
+    "capturedAt": { "type": "string", "format": "date-time" },
+    "addonContractCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "reportedCostSemantics": {
+      "enum": ["cumulative_from_current", "edge_from_previous"]
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "items": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/$defs/item" }
+    }
+  },
+  "$defs": {
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slot",
+        "bagIndex",
+        "itemId",
+        "currentUpgradeLevel",
+        "currentItemLevel",
+        "targets"
+      ],
+      "properties": {
+        "slot": {
+          "enum": [
+            "head", "neck", "shoulders", "back", "chest", "shirt", "tabard",
+            "wrists", "hands", "waist", "legs", "feet", "finger1", "finger2",
+            "trinket1", "trinket2", "main_hand", "off_hand"
+          ]
+        },
+        "bagIndex": { "type": ["integer", "null"], "minimum": 0 },
+        "itemId": { "type": "integer", "minimum": 1 },
+        "currentUpgradeLevel": { "type": "integer", "minimum": 1, "maximum": 255 },
+        "currentItemLevel": { "type": "integer", "minimum": 1 },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/target" }
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetLevel", "targetItemLevel", "effectiveCosts", "discountFlags"],
+      "properties": {
+        "targetLevel": { "type": "integer", "minimum": 1, "maximum": 255 },
+        "targetItemLevel": { "type": "integer", "minimum": 1 },
+        "effectiveCosts": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[ci]:[1-9][0-9]*$" },
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "discountFlags": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[ci]:[1-9][0-9]*$" },
+          "additionalProperties": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

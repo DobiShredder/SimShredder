@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "revision": "12.1.0-69497-v1",
+  "game_build": 69497,
+  "game_version": "12.1.0",
+  "source": "Official SimC AddOn 12.1.0-03 debug upgrade quotes for Retail Live build 69497; future consecutive targets with per-edge costs.",
+  "currency_ids": ["crest", "valor", "adventurer_mistcrest", "veteran_mistcrest", "champion_mistcrest", "hero_mistcrest", "myth_mistcrest", "spark_of_tides"],
+  "max_embellishments": 2,
+  "max_sockets_per_item": 3,
+  "upgrade_tracks": {},
+  "upgrade_cost_ids": {
+    "c:3442": "adventurer_mistcrest",
+    "c:3443": "veteran_mistcrest",
+    "c:3444": "champion_mistcrest",
+    "c:3445": "hero_mistcrest",
+    "c:3446": "myth_mistcrest",
+    "i:274476": "spark_of_tides"
+  },
+  "addon_upgrade_contract_commit": "d2452dce69276ede2bddf8056baf00288f1d4f2b",
+  "addon_upgrade_target_semantics": "future_consecutive_ranks",
+  "addon_upgrade_cost_semantics": "edge_from_previous",
+  "allowed_enchant_slots": [
+    "back",
+    "chest",
+    "wrists",
+    "legs",
+    "feet",
+    "finger1",
+    "finger2",
+    "main_hand"
+  ]
+}
