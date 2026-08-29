@@ -1,5 +1,23 @@
 const baselineCapture = process.env.SIMSHREDDER_E2E_ACCEPT_BASELINE === "1";
 const visualThreshold = (regressionThreshold: number) => baselineCapture ? Number.POSITIVE_INFINITY : regressionThreshold;
+const setViewport = async (width: number, outerHeight: number) => {
+  const scaleFactor = await browser.execute(() => window.devicePixelRatio || 1);
+  await browser.setWindowSize(Math.round(width * scaleFactor), Math.round(outerHeight * scaleFactor));
+};
+const layoutContract = () => browser.execute(() => ({
+  documentWidth: document.documentElement.scrollWidth,
+  viewportWidth: document.documentElement.clientWidth,
+  overflowSources: [...document.querySelectorAll<HTMLElement>("body *")]
+    .filter((element) => element.getBoundingClientRect().right > document.documentElement.clientWidth + 1)
+    .sort((left, right) => right.getBoundingClientRect().right - left.getBoundingClientRect().right)
+    .slice(0, 8)
+    .map((element) => `${element.tagName.toLowerCase()}.${element.className}:${Math.round(element.getBoundingClientRect().right)}`),
+}));
+const expectNoDocumentOverflow = (layout: Awaited<ReturnType<typeof layoutContract>>) => {
+  if (layout.documentWidth > layout.viewportWidth) {
+    throw new Error(`document overflow ${layout.documentWidth}px > ${layout.viewportWidth}px; ${layout.overflowSources.join(", ")}`);
+  }
+};
 
 describe("supported desktop shell", () => {
   it("opens the real Tauri app and prepares an exact character-analysis preview", async () => {
@@ -191,10 +209,8 @@ describe("supported desktop shell", () => {
       await browser.waitUntil(async () => {
         const diagnostic = await $(".inline-error code");
         if (await diagnostic.isExisting()) throw new Error(`Character Analysis failed: ${await diagnostic.getText()}`);
-        const state = await $(".job-title strong");
-        return await state.isExisting() && await state.getText() === "완료";
+        return await $("h1*=DesktopE2E").isExisting();
       }, { timeout: autoInstall ? 300_000 : 120_000 });
-      await (await $("button=결과 보기")).click();
       const resultHeading = await $("h1*=DesktopE2E");
       await resultHeading.waitForDisplayed({ timeout: 60_000 });
       await expect(resultHeading).toHaveText(expect.stringContaining("DesktopE2E"));
@@ -226,6 +242,18 @@ describe("supported desktop shell", () => {
         ignoreAntialiasing: true,
         ignore: [$(".metric-grid"), $(".result-chart")],
       })).toBeLessThan(visualThreshold(3));
+      await browser.execute(() => {
+        document.documentElement.style.fontSize = "200%";
+        window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      });
+      await expect($(".result-picker-list")).toBeDisplayed();
+      const resultLayout = await layoutContract();
+      expectNoDocumentOverflow(resultLayout);
+      expect(await browser.checkScreen("result-ko-200-percent-live", {
+        ignoreAntialiasing: true,
+        ignore: [$(".metric-grid"), $(".result-chart")],
+      })).toBeLessThan(visualThreshold(3));
+      await browser.execute(() => { document.documentElement.style.fontSize = "100%"; });
       await (await $("button=검증된 산출물 내보내기")).click();
       await expect($("p*=파일 5개를 내보냈습니다")).toBeDisplayed();
     }
@@ -283,11 +311,35 @@ describe("supported desktop shell", () => {
       }, { timeout: 90_000 });
       await expect($("ol[aria-label='장비 최적화 진행 단계']")).toHaveText(expect.stringContaining("중간 정밀 생존 후보 탐색"));
       await expect($("button=다음 검증 단계 계속")).not.toBeExisting();
+      await browser.execute(() => {
+        document.documentElement.style.fontSize = "200%";
+        window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      });
+      const runsLayout = await layoutContract();
+      expectNoDocumentOverflow(runsLayout);
+      expect(await browser.checkScreen("runs-ko-200-percent-live", { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(3));
+      await browser.execute(() => { document.documentElement.style.fontSize = "100%"; });
       const finalInput = await $("h2=최종 검증 .simc 입력");
       await finalInput.waitForDisplayed({ timeout: autoInstall ? 600_000 : 300_000 });
       await expect($("h2=검증된 장비 조합 순위")).toBeDisplayed();
+      await expect($$(".result-picker-list [role='listitem']")).toBeElementsArrayOfSize({ gte: 2 });
       await (await $("button=검증된 장비 최적화 산출물 내보내기")).click();
       await expect($("p*=파일 6개를 내보냈습니다")).toBeDisplayed();
+
+      await (await $("button=기록")).click();
+      await expect($("h1=실행 기록")).toBeDisplayed();
+      await expect($$(".run-history-list li")).toBeElementsArrayOfSize({ gte: 2 });
+      await setViewport(720, 560);
+      await browser.execute(() => window.scrollTo({ top: 0, left: 0, behavior: "auto" }));
+      const historyLayout = await layoutContract();
+      expectNoDocumentOverflow(historyLayout);
+      expect(await browser.checkScreen("history-ko-min-window-live", { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(3));
+      const deleteButtons = await $$(".history-delete");
+      await deleteButtons[0].click();
+      await expect($("dialog")).toBeDisplayed();
+      await expect($("button=취소")).toBeDisplayed();
+      await (await $("button=취소")).click();
+      await setViewport(1024, 674);
     }
   });
 });

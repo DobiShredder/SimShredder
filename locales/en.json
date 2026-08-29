@@ -581,11 +581,21 @@
     "cacheHit": "Exact cache hit",
     "attempt": "Attempt {{sequence}}",
     "diagnostic": "Diagnostic",
-    "polling": "Refreshing job state…"
+    "polling": "Refreshing job state…",
+    "character": "Character",
+    "elapsed": "Elapsed",
+    "cpu": "CPU",
+    "threads": "{{count}} threads",
+    "settings": "Key settings",
+    "recentDiagnostics": "Recent diagnostics",
+    "closeConfirmation": "A simulation is still running. Close SimShredder and leave it recoverable?"
   },
   "resultsPage": {
     "eyebrow": "Character Analysis result",
-    "chooseResult": "Completed result",
+    "chooseResult": "Completed results",
+    "searchResults": "Find a result",
+    "searchPlaceholder": "Character, specialization, or run type",
+    "noSearchResults": "No completed result matches this search.",
     "noResultBody": "Completed Character Analysis and Gear Optimizer runs will appear here.",
     "loading": "Loading selected result…",
     "loadFailed": "The selected result could not be loaded",
@@ -664,7 +674,29 @@
     "deleteBody": "The run record and artifacts used only by this run will be permanently deleted. Shared cache artifacts, exported files, and other runs are not affected.",
     "confirmDelete": "Delete run",
     "deleting": "Deleting…",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "filters": "History filters",
+    "search": "Search",
+    "type": "Run type",
+    "status": "Status",
+    "all": "All",
+    "noMatches": "No archived run matches these filters.",
+    "rerun": "Run again"
+  },
+  "runBehavior": {
+    "title": "Long-running simulations",
+    "body": "Control local behavior while a simulation is active.",
+    "notifications": "Completion notifications",
+    "notificationsHelp": "Use an operating-system notification when a run completes, fails, or is interrupted, if permission is granted.",
+    "preventSleep": "Prevent system sleep",
+    "preventSleepHelp": "Keep the computer awake only while local simulation work is active. Display sleep is not blocked."
+  },
+  "notifications": {
+    "title": "SimShredder run finished",
+    "succeeded": "{{name}} completed successfully.",
+    "failed": "{{name}} failed. Open Runs for diagnostics.",
+    "canceled": "{{name}} was canceled.",
+    "interrupted": "{{name}} was interrupted and can be recovered."
   },
   "placeholder": {
     "title": "Feature unavailable",

@@ -13,10 +13,10 @@ import {
   Settings,
   Sun,
 } from "lucide-react";
-import { useCallback, useEffect, useState, type ComponentType } from "react";
+import { useCallback, useEffect, useRef, useState, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import type { SupportedLocale } from "./i18n";
-import { quickDelete, quickJobs as loadQuickJobs, quickRecover, type JobView, type PreparedQuickSim, type QuickSimRequest } from "./quick";
+import { quickDelete, quickJobs as loadQuickJobs, quickRecover, quickRerun, type JobView, type PreparedQuickSim, type QuickSimRequest } from "./quick";
 import { sameRun, type RunReference } from "./runs";
 import { formatRuntimeDataDate, formatRuntimeError, runtimeCheckUpdates, runtimeInstallLatest, runtimeStatus, type RuntimeView } from "./runtime";
 import { ImportPage } from "./screens/ImportPage";
@@ -26,7 +26,8 @@ import { QuickSimPage } from "./screens/QuickSimPage";
 import { ResultsPage } from "./screens/ResultsPage";
 import { SettingsPage } from "./screens/SettingsPage";
 import { TopGearPage } from "./screens/TopGearPage";
-import { topGearDelete, topGearSessions, type TopGearSessionView } from "./topGear";
+import { topGearDelete, topGearRerun, topGearSessions, type TopGearSessionView } from "./topGear";
+import { invoke } from "@tauri-apps/api/core";
 
 type Page = "home" | "import" | "quickSim" | "topGear" | "jobs" | "results" | "history" | "settings";
 
@@ -48,6 +49,25 @@ const navigation: NavItem[] = [
 ];
 
 const RUNTIME_UPDATE_CHECK_DATE_KEY = "simshredder.runtimeUpdateCheckDate";
+const PREVENT_SLEEP_KEY = "simshredder.preventSleepDuringRuns";
+const NOTIFICATIONS_KEY = "simshredder.runNotifications";
+
+function storedBoolean(key: string, fallback: boolean) {
+  try {
+    const value = window.localStorage.getItem(key);
+    return value === null ? fallback : value === "true";
+  } catch {
+    return fallback;
+  }
+}
+
+function storeBoolean(key: string, value: boolean) {
+  try {
+    window.localStorage.setItem(key, String(value));
+  } catch {
+    // Settings still apply for this process when WebView storage is unavailable.
+  }
+}
 
 function localDateKey(date = new Date()) {
   const year = date.getFullYear();
@@ -70,6 +90,9 @@ export function App() {
   const [runtimeUpdate, setRuntimeUpdate] = useState<RuntimeView | null>(null);
   const [runtimeUpdateBusy, setRuntimeUpdateBusy] = useState(false);
   const [runtimeUpdateError, setRuntimeUpdateError] = useState<string | null>(null);
+  const [preventSleep, setPreventSleep] = useState(() => storedBoolean(PREVENT_SLEEP_KEY, true));
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => storedBoolean(NOTIFICATIONS_KEY, false));
+  const previousStates = useRef(new Map<string, string>());
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -122,6 +145,17 @@ export function App() {
     setSelectedRun((current) => sameRun(current, run) ? null : current);
     setSelectedResult((current) => sameRun(current, run) ? null : current);
   }, [topGearSessionsState]);
+  const rerun = useCallback(async (run: RunReference) => {
+    if (run.kind === "quick") {
+      const next = await quickRerun(run.jobId);
+      updateJob(next);
+      openRun({ kind: "quick", jobId: next.id });
+    } else {
+      const next = await topGearRerun(run.sessionId);
+      updateTopGearSession(next);
+      openRun({ kind: "topGear", sessionId: next.id });
+    }
+  }, [openRun, updateJob, updateTopGearSession]);
 
   const changeLocale = (locale: SupportedLocale) => {
     void i18n.changeLanguage(locale);
@@ -144,12 +178,45 @@ export function App() {
   const trackedSession = topGearSessionsState.find((session) => session.stage !== "complete");
   const trackedJob = quickRuns.find((candidate) => ["queued", "running"].includes(candidate.state));
   const trackedTopGear = trackedSession
-    ? { page: "jobs" as const, label: t("status.gearOptimizer"), detail: `${t(`topGear.stage_${trackedSession.stage}`)} · ${t(`jobsPage.${trackedSession.currentJob.state}`)}`, active: ["queued", "running"].includes(trackedSession.currentJob.state) }
+    ? { page: "jobs" as const, label: t("status.gearOptimizer"), detail: `${t(`topGear.stage_${trackedSession.stage}`)} · ${t(`jobsPage.${trackedSession.pipelineFailure ? "failed" : trackedSession.currentJob.state === "succeeded" ? "running" : trackedSession.currentJob.state}`)}`, active: !trackedSession.pipelineFailure && ["queued", "running", "succeeded"].includes(trackedSession.currentJob.state) }
     : null;
   const trackedQuick = trackedJob
     ? { page: "jobs" as const, label: t("status.characterAnalysis"), detail: t(`jobsPage.${trackedJob.state}`), active: true }
     : null;
   const trackedWork = trackedTopGear ?? trackedQuick;
+
+  useEffect(() => {
+    const current = new Map<string, string>();
+    const completed: Array<{ title: string; state: string }> = [];
+    for (const job of quickRuns) {
+      const key = `quick-${job.id}`;
+      current.set(key, job.state);
+      if (["queued", "running"].includes(previousStates.current.get(key) ?? "") && !["queued", "running"].includes(job.state)) completed.push({ title: `${job.profile.name} · ${job.profile.specialization}`, state: job.state });
+    }
+    for (const session of topGearSessionsState) {
+      const key = `top-gear-${session.id}`;
+      const state = session.stage === "complete" ? "succeeded" : session.pipelineFailure ? "failed" : session.currentJob.state === "succeeded" ? "running" : session.currentJob.state;
+      current.set(key, state);
+      if (["queued", "running"].includes(previousStates.current.get(key) ?? "") && !["queued", "running"].includes(state)) completed.push({ title: `${session.currentJob.profile.name} · ${session.currentJob.profile.specialization}`, state });
+    }
+    previousStates.current = current;
+    for (const item of completed) {
+      if (notificationsEnabled && "Notification" in window && Notification.permission === "granted") new Notification(t("notifications.title"), { body: t(`notifications.${item.state}`, { name: item.title }) });
+    }
+  }, [notificationsEnabled, quickRuns, t, topGearSessionsState]);
+
+  const hasActiveRun = Boolean(trackedWork?.active);
+  useEffect(() => {
+    void invoke("set_sleep_prevention", { enabled: hasActiveRun && preventSleep }).catch(() => undefined);
+  }, [hasActiveRun, preventSleep]);
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let unlisten: (() => void) | undefined;
+    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().onCloseRequested((event) => {
+      if (hasActiveRun && !window.confirm(t("jobsPage.closeConfirmation"))) event.preventDefault();
+    })).then((dispose) => { unlisten = dispose; }).catch(() => undefined);
+    return () => unlisten?.();
+  }, [hasActiveRun, t]);
 
   return (
     <>
@@ -226,7 +293,7 @@ export function App() {
           ) : page === "import" ? (
             <ImportPage onPrepared={(request, prepared) => { setQuickRequest(request); setPreview(prepared); setPage("quickSim"); }} />
           ) : page === "quickSim" ? (
-            <QuickSimPage request={quickRequest} preview={preview} onChange={(request, prepared) => { setQuickRequest(request); setPreview(prepared); }} onStarted={(next) => { updateJob(next); openRun({ kind: "quick", jobId: next.id }); }} onImport={() => setPage("import")} />
+            <QuickSimPage request={quickRequest} preview={preview} onChange={(request, prepared) => { setQuickRequest(request); setPreview(prepared); }} onStarted={(next) => { updateJob(next); (next.state === "succeeded" ? openResult : openRun)({ kind: "quick", jobId: next.id }); }} onImport={() => setPage("import")} />
           ) : page === "topGear" ? (
             <TopGearPage quick={quickRequest} onStarted={(next) => { updateTopGearSession(next); openRun({ kind: "topGear", sessionId: next.id }); }} onImport={() => setPage("import")} />
           ) : page === "jobs" ? (
@@ -234,9 +301,9 @@ export function App() {
           ) : page === "results" ? (
             <ResultsPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} selected={selectedResult} onSelect={setSelectedResult} />
           ) : page === "history" ? (
-            <HistoryPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} onOpenRun={openRun} onOpenResult={openResult} onDelete={deleteRun} />
+            <HistoryPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} onOpenRun={openRun} onOpenResult={openResult} onDelete={deleteRun} onRerun={rerun} />
           ) : page === "settings" ? (
-            <SettingsPage initialRuntime={runtime} onRuntimeChange={setRuntime} />
+            <SettingsPage initialRuntime={runtime} onRuntimeChange={setRuntime} preventSleep={preventSleep} notificationsEnabled={notificationsEnabled} onPreventSleepChange={(enabled) => { storeBoolean(PREVENT_SLEEP_KEY, enabled); setPreventSleep(enabled); }} onNotificationsChange={(enabled) => { storeBoolean(NOTIFICATIONS_KEY, enabled); setNotificationsEnabled(enabled); if (enabled && "Notification" in window && Notification.permission === "default") void Notification.requestPermission(); }} />
           ) : (
             <PlaceholderPage page={page} />
           )}

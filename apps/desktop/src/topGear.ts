@@ -182,6 +182,7 @@ export type TopGearSessionView = {
   totalExecutions: number;
   canAdvance: boolean;
   pipelineFailure: string | null;
+  createdUnixMillis: number;
 };
 
 export type PlannedAction = {
@@ -268,6 +269,8 @@ export const topGearCancel = (sessionId: string): Promise<TopGearSessionView> =>
   invoke("top_gear_cancel", { sessionId });
 export const topGearRetry = (sessionId: string): Promise<TopGearSessionView> =>
   invoke("top_gear_retry", { sessionId });
+export const topGearRerun = (sessionId: string): Promise<TopGearSessionView> =>
+  invoke("top_gear_rerun", { sessionId });
 export const topGearResult = (sessionId: string): Promise<TopGearResultView> =>
   invoke("top_gear_result", { sessionId });
 export const topGearExport = (sessionId: string): Promise<{ directory: string; fileCount: number }> =>

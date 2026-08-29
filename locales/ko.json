@@ -581,11 +581,21 @@
     "cacheHit": "Exact cache 사용",
     "attempt": "시도 {{sequence}}",
     "diagnostic": "진단",
-    "polling": "작업 상태를 갱신하는 중…"
+    "polling": "작업 상태를 갱신하는 중…",
+    "character": "캐릭터",
+    "elapsed": "경과 시간",
+    "cpu": "CPU",
+    "threads": "thread {{count}}개",
+    "settings": "주요 설정",
+    "recentDiagnostics": "최근 진단",
+    "closeConfirmation": "시뮬레이션이 실행 중입니다. SimShredder를 닫고 복구 가능한 상태로 남길까요?"
   },
   "resultsPage": {
     "eyebrow": "캐릭터 분석 결과",
     "chooseResult": "완료된 결과",
+    "searchResults": "결과 찾기",
+    "searchPlaceholder": "캐릭터, 전문화 또는 실행 종류",
+    "noSearchResults": "검색 조건과 일치하는 완료 결과가 없습니다.",
     "noResultBody": "완료된 캐릭터 분석과 장비 최적화 작업이 여기에 표시됩니다.",
     "loading": "선택한 결과를 불러오는 중…",
     "loadFailed": "선택한 결과를 불러오지 못했습니다",
@@ -664,7 +674,29 @@
     "deleteBody": "실행 기록과 이 기록만 사용하는 결과 산출물이 영구 삭제됩니다. 다른 기록이 함께 사용하는 캐시, 내보낸 파일과 다른 실행 기록은 유지됩니다.",
     "confirmDelete": "기록 삭제",
     "deleting": "삭제 중…",
-    "cancel": "취소"
+    "cancel": "취소",
+    "filters": "기록 필터",
+    "search": "검색",
+    "type": "실행 종류",
+    "status": "상태",
+    "all": "전체",
+    "noMatches": "필터와 일치하는 보관 기록이 없습니다.",
+    "rerun": "다시 실행"
+  },
+  "runBehavior": {
+    "title": "장시간 시뮬레이션",
+    "body": "시뮬레이션 실행 중 이 기기의 동작을 설정합니다.",
+    "notifications": "완료 알림",
+    "notificationsHelp": "권한이 허용된 경우 완료, 실패 또는 중단 시 운영체제 알림을 표시합니다.",
+    "preventSleep": "시스템 잠자기 방지",
+    "preventSleepHelp": "로컬 계산이 실행 중일 때만 컴퓨터가 잠자기 상태로 전환되지 않게 합니다. 디스플레이 잠자기는 막지 않습니다."
+  },
+  "notifications": {
+    "title": "SimShredder 실행 종료",
+    "succeeded": "{{name}} 실행이 완료되었습니다.",
+    "failed": "{{name}} 실행에 실패했습니다. 실행 탭에서 진단을 확인하세요.",
+    "canceled": "{{name}} 실행이 취소되었습니다.",
+    "interrupted": "{{name}} 실행이 중단되었으며 복구할 수 있습니다."
   },
   "placeholder": {
     "title": "기능 준비 중",

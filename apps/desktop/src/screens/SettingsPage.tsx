@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, CheckCircle2, Download, FolderCog, FolderOpen, Image, RotateCcw, Save, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, Bell, CheckCircle2, Download, FolderCog, FolderOpen, Image, MoonStar, RotateCcw, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -16,9 +16,13 @@ import { storagePathsGet, storagePathsReset, storagePathsSave, type StoragePaths
 
 type Operation = "checking" | "installing" | "rollingBack" | null;
 
-export function SettingsPage({ initialRuntime, onRuntimeChange }: {
+export function SettingsPage({ initialRuntime, onRuntimeChange, preventSleep, notificationsEnabled, onPreventSleepChange, onNotificationsChange }: {
   initialRuntime: RuntimeView | null;
   onRuntimeChange: (runtime: RuntimeView) => void;
+  preventSleep: boolean;
+  notificationsEnabled: boolean;
+  onPreventSleepChange: (enabled: boolean) => void;
+  onNotificationsChange: (enabled: boolean) => void;
 }) {
   const { t, i18n } = useTranslation();
   const [runtime, setRuntime] = useState<RuntimeView | null>(initialRuntime);
@@ -166,6 +170,11 @@ export function SettingsPage({ initialRuntime, onRuntimeChange }: {
       <p className="eyebrow">{t("nav.settings")}</p>
       <h1>{t("runtime.installTitle")}</h1>
       <p className="settings-lead">{t("runtime.installBody")}</p>
+
+      <section className="setup-card" aria-labelledby="run-behavior-title">
+        <div className="setup-card-header"><div><h2 id="run-behavior-title">{t("runBehavior.title")}</h2><p className="settings-lead">{t("runBehavior.body")}</p></div><Bell aria-hidden="true" size={34} className="setup-shield" /></div>
+        <div className="quick-toggle-grid"><label className="checkbox-line"><input checked={notificationsEnabled} type="checkbox" onChange={(event) => onNotificationsChange(event.target.checked)} /><span><strong>{t("runBehavior.notifications")}</strong><small>{t("runBehavior.notificationsHelp")}</small></span></label><label className="checkbox-line"><input checked={preventSleep} type="checkbox" onChange={(event) => onPreventSleepChange(event.target.checked)} /><MoonStar aria-hidden="true" size={18} /><span><strong>{t("runBehavior.preventSleep")}</strong><small>{t("runBehavior.preventSleepHelp")}</small></span></label></div>
+      </section>
 
       <section className="setup-card" aria-labelledby="runtime-card-title">
         <div className="setup-card-header">

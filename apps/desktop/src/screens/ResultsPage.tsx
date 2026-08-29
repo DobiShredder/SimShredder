@@ -1,9 +1,10 @@
 import * as Tabs from "@radix-ui/react-tabs";
-import { Download } from "lucide-react";
+import { Download, Gauge, Layers3, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { quickExport, quickResult, type JobView, type QuickResultView } from "../quick";
-import { runKey, sameRun, type RunReference } from "../runs";
+import { sameRun, type RunReference } from "../runs";
+import { buildRunCatalog } from "../runCatalog";
 import { topGearResult, type TopGearResultView, type TopGearSessionView } from "../topGear";
 import { EntityTooltip, type TooltipKind, type TooltipModel } from "../tooltips";
 import { TopGearResultsPanel } from "./TopGearResultsPanel";
@@ -18,10 +19,9 @@ export function ResultsPage({ quickJobs, topGearSessions, selected, onSelect }: 
   const [quick, setQuick] = useState<QuickResultView | null>(null);
   const [gear, setGear] = useState<TopGearResultView | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const completed = useMemo(() => [
-    ...topGearSessions.filter((session) => session.stage === "complete").map((session) => ({ run: { kind: "topGear", sessionId: session.id } as RunReference, label: `${t("historyPage.gearOptimizer")} · ${session.id}` })),
-    ...quickJobs.filter((job) => job.state === "succeeded").map((job) => ({ run: { kind: "quick", jobId: job.id } as RunReference, label: `${t("historyPage.characterAnalysis")} · ${t("jobsPage.job", { id: job.id })}` })),
-  ], [quickJobs, t, topGearSessions]);
+  const [query, setQuery] = useState("");
+  const completed = useMemo(() => buildRunCatalog(quickJobs, topGearSessions).results, [quickJobs, topGearSessions]);
+  const visible = completed.filter((entry) => `${entry.characterName} ${entry.specialization} ${entry.type} ${entry.state}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
 
   useEffect(() => { if ((!selected || !completed.some((entry) => sameRun(selected, entry.run))) && completed[0]) onSelect(completed[0].run); }, [completed, onSelect, selected]);
   useEffect(() => {
@@ -32,7 +32,7 @@ export function ResultsPage({ quickJobs, topGearSessions, selected, onSelect }: 
       : topGearResult(selected.sessionId).then(setGear);
     void load.catch((reason) => setError(String(reason)));
   }, [completed, selected]);
-  const picker = <section className="result-picker"><label>{t("resultsPage.chooseResult")}<select value={selected ? runKey(selected) : ""} onChange={(event) => { const entry = completed.find((candidate) => runKey(candidate.run) === event.target.value); if (entry) onSelect(entry.run); }}>{completed.map((entry) => <option key={runKey(entry.run)} value={runKey(entry.run)}>{entry.label}</option>)}</select></label></section>;
+  const picker = <section className="result-picker"><label className="run-search"><span><Search aria-hidden="true" size={17} />{t("resultsPage.searchResults")}</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("resultsPage.searchPlaceholder")} /></label><div className="result-picker-list" role="list" aria-label={t("resultsPage.chooseResult")}>{visible.map((entry) => { const Icon = entry.type === "gearOptimizer" ? Layers3 : Gauge; return <div role="listitem" key={entry.key}><button className={sameRun(selected, entry.run) ? "selected" : ""} type="button" onClick={() => onSelect(entry.run)}><Icon aria-hidden="true" size={18} /><span><strong>{entry.characterName} · {entry.specialization}</strong><small>{t(`historyPage.${entry.type}`)} · {new Date(entry.createdUnixMillis).toLocaleString()} · {entry.settings.fightStyle}, {entry.settings.desiredTargets}</small></span><em>{t(`jobsPage.${entry.state}`)}</em></button></div>; })}</div>{!visible.length ? <p className="muted">{t("resultsPage.noSearchResults")}</p> : null}</section>;
   if (!completed.length) return <div className="page placeholder-page"><p className="eyebrow">{t("resultsPage.eyebrow")}</p><h1>{t("resultsPage.noResult")}</h1><p>{t("resultsPage.noResultBody")}</p></div>;
   if (error) return <div className="page results-page"><p className="eyebrow">{t("resultsPage.eyebrow")}</p><h1>{t("resultsPage.loadFailed")}</h1>{picker}<div className="inline-error" role="alert"><code>{error}</code></div></div>;
   if (gear) return <TopGearResultsPanel result={gear} picker={picker} />;

@@ -152,10 +152,14 @@ pub struct ClaimedAttempt {
 pub struct JobSnapshot {
     pub id: i64,
     pub state: PersistentState,
+    pub cpu_preset: CpuPreset,
     pub cancel_requested: bool,
     pub failure: Option<String>,
     pub succeeded_batches: u32,
     pub pending_batches: u32,
+    pub created_unix_millis: i64,
+    pub updated_unix_millis: i64,
+    pub profile_json: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -164,6 +168,8 @@ pub struct AttemptSnapshot {
     pub batch_id: i64,
     pub sequence: u32,
     pub state: PersistentState,
+    pub started_unix_millis: i64,
+    pub finished_unix_millis: Option<i64>,
     pub failure: Option<String>,
     pub artifact_directory: Option<PathBuf>,
     pub cache_hit: bool,
@@ -623,19 +629,23 @@ impl Database {
 
     pub fn job(&self, job_id: i64) -> Result<JobSnapshot> {
         self.connection.query_row(
-            "SELECT j.id, j.state, j.cancel_requested, j.failure, SUM(CASE WHEN b.state='succeeded' THEN 1 ELSE 0 END), SUM(CASE WHEN b.state!='succeeded' THEN 1 ELSE 0 END) FROM jobs j JOIN job_batches b ON b.job_id=j.id WHERE j.id=?1 GROUP BY j.id",
+            "SELECT j.id, j.state, j.cpu_preset, j.cancel_requested, j.failure, SUM(CASE WHEN b.state='succeeded' THEN 1 ELSE 0 END), SUM(CASE WHEN b.state!='succeeded' THEN 1 ELSE 0 END), j.created_unix_millis, j.updated_unix_millis, p.profile_json FROM jobs j JOIN job_batches b ON b.job_id=j.id JOIN profiles p ON p.id=j.profile_id WHERE j.id=?1 GROUP BY j.id",
             [job_id],
             |row| {
                 let state: String = row.get(1)?;
-                Ok((row.get(0)?, state, row.get::<_, i64>(2)?, row.get(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?))
+                Ok((row.get(0)?, state, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get(4)?, row.get::<_, i64>(5)?, row.get::<_, i64>(6)?, row.get::<_, i64>(7)?, row.get::<_, i64>(8)?, row.get::<_, String>(9)?))
             },
-        ).map_err(Error::from).and_then(|(id, state, cancel, failure, succeeded, pending)| Ok(JobSnapshot {
+        ).map_err(Error::from).and_then(|(id, state, cpu_preset, cancel, failure, succeeded, pending, created, updated, profile_json)| Ok(JobSnapshot {
             id,
             state: PersistentState::parse(&state)?,
+            cpu_preset: CpuPreset::parse(&cpu_preset)?,
             cancel_requested: cancel != 0,
             failure,
             succeeded_batches: u32::try_from(succeeded).map_err(|_| Error::Contract("batch count overflow".into()))?,
             pending_batches: u32::try_from(pending).map_err(|_| Error::Contract("batch count overflow".into()))?,
+            created_unix_millis: created,
+            updated_unix_millis: updated,
+            profile_json,
         }))
     }
 
@@ -646,7 +656,7 @@ impl Database {
             ));
         }
         let mut statement = self.connection.prepare(
-            "SELECT j.id, j.state, j.cancel_requested, j.failure, SUM(CASE WHEN b.state='succeeded' THEN 1 ELSE 0 END), SUM(CASE WHEN b.state!='succeeded' THEN 1 ELSE 0 END) FROM jobs j JOIN job_batches b ON b.job_id=j.id GROUP BY j.id ORDER BY j.id DESC LIMIT ?1",
+            "SELECT j.id, j.state, j.cpu_preset, j.cancel_requested, j.failure, SUM(CASE WHEN b.state='succeeded' THEN 1 ELSE 0 END), SUM(CASE WHEN b.state!='succeeded' THEN 1 ELSE 0 END), j.created_unix_millis, j.updated_unix_millis, p.profile_json FROM jobs j JOIN job_batches b ON b.job_id=j.id JOIN profiles p ON p.id=j.profile_id GROUP BY j.id ORDER BY j.id DESC LIMIT ?1",
         )?;
         let rows = statement.query_map(
             [i64::try_from(limit)
@@ -655,28 +665,79 @@ impl Database {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                     row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, String>(9)?,
                 ))
             },
         )?;
         let mut jobs = Vec::new();
         for row in rows {
-            let (id, state, cancel, failure, succeeded, pending) = row?;
+            let (
+                id,
+                state,
+                cpu_preset,
+                cancel,
+                failure,
+                succeeded,
+                pending,
+                created,
+                updated,
+                profile_json,
+            ) = row?;
             jobs.push(JobSnapshot {
                 id,
                 state: PersistentState::parse(&state)?,
+                cpu_preset: CpuPreset::parse(&cpu_preset)?,
                 cancel_requested: cancel != 0,
                 failure,
                 succeeded_batches: u32::try_from(succeeded)
                     .map_err(|_| Error::Contract("batch count overflow".into()))?,
                 pending_batches: u32::try_from(pending)
                     .map_err(|_| Error::Contract("batch count overflow".into()))?,
+                created_unix_millis: created,
+                updated_unix_millis: updated,
+                profile_json,
             });
         }
         Ok(jobs)
+    }
+
+    pub fn clone_terminal_job(&mut self, job_id: i64) -> Result<i64> {
+        let now = now_millis()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let state: String = transaction
+            .query_row("SELECT state FROM jobs WHERE id=?1", [job_id], |row| {
+                row.get(0)
+            })
+            .optional()?
+            .ok_or_else(|| Error::Contract(format!("job {job_id} does not exist")))?;
+        if matches!(
+            PersistentState::parse(&state)?,
+            PersistentState::Queued | PersistentState::Running
+        ) {
+            return Err(Error::Contract(format!(
+                "job {job_id} is active and cannot be rerun"
+            )));
+        }
+        transaction.execute(
+            "INSERT INTO jobs(profile_id, state, cpu_preset, executable_path, runtime_revision, executable_sha256, simc_version, game_version, normalized_schema_version, rule_revision, timeout_millis, created_unix_millis, updated_unix_millis) SELECT profile_id, 'queued', cpu_preset, executable_path, runtime_revision, executable_sha256, simc_version, game_version, normalized_schema_version, rule_revision, timeout_millis, ?2, ?2 FROM jobs WHERE id=?1",
+            params![job_id, now],
+        )?;
+        let rerun_id = transaction.last_insert_rowid();
+        transaction.execute(
+            "INSERT INTO job_batches(job_id, ordinal, state, source_kind, source_bytes, generated_bytes, generated_sha256, cache_key, created_unix_millis, updated_unix_millis) SELECT ?2, ordinal, 'queued', source_kind, source_bytes, generated_bytes, generated_sha256, cache_key, ?3, ?3 FROM job_batches WHERE job_id=?1 ORDER BY ordinal",
+            params![job_id, rerun_id, now],
+        )?;
+        transaction.commit()?;
+        Ok(rerun_id)
     }
 
     pub fn delete_terminal_jobs(&mut self, job_ids: &[i64]) -> Result<()> {
@@ -752,7 +813,7 @@ impl Database {
 
     pub fn attempts_for_job(&self, job_id: i64) -> Result<Vec<AttemptSnapshot>> {
         let mut statement = self.connection.prepare(
-            "SELECT a.id, a.batch_id, a.sequence, a.state, a.failure, a.artifact_directory, a.cache_hit, a.stdout_log_truncated, a.stderr_log_truncated FROM job_attempts a JOIN job_batches b ON b.id=a.batch_id WHERE b.job_id=?1 ORDER BY b.ordinal, a.sequence",
+            "SELECT a.id, a.batch_id, a.sequence, a.state, a.started_unix_millis, a.finished_unix_millis, a.failure, a.artifact_directory, a.cache_hit, a.stdout_log_truncated, a.stderr_log_truncated FROM job_attempts a JOIN job_batches b ON b.id=a.batch_id WHERE b.job_id=?1 ORDER BY b.ordinal, a.sequence",
         )?;
         let rows = statement.query_map([job_id], |row| {
             Ok((
@@ -760,11 +821,13 @@ impl Database {
                 row.get::<_, i64>(1)?,
                 row.get::<_, i64>(2)?,
                 row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
                 row.get::<_, i64>(8)?,
+                row.get::<_, i64>(9)?,
+                row.get::<_, i64>(10)?,
             ))
         })?;
         let mut attempts = Vec::new();
@@ -774,6 +837,8 @@ impl Database {
                 batch_id,
                 sequence,
                 state,
+                started_unix_millis,
+                finished_unix_millis,
                 failure,
                 artifact,
                 cache_hit,
@@ -786,6 +851,8 @@ impl Database {
                 sequence: u32::try_from(sequence)
                     .map_err(|_| Error::Contract("attempt sequence overflow".into()))?,
                 state: PersistentState::parse(&state)?,
+                started_unix_millis,
+                finished_unix_millis,
                 failure,
                 artifact_directory: artifact.map(PathBuf::from),
                 cache_hit: cache_hit != 0,
@@ -798,7 +865,7 @@ impl Database {
 
     pub fn running_attempts(&self) -> Result<Vec<AttemptSnapshot>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, batch_id, sequence, state, failure, artifact_directory, cache_hit, stdout_log_truncated, stderr_log_truncated FROM job_attempts WHERE state='running' ORDER BY id",
+            "SELECT id, batch_id, sequence, state, started_unix_millis, finished_unix_millis, failure, artifact_directory, cache_hit, stdout_log_truncated, stderr_log_truncated FROM job_attempts WHERE state='running' ORDER BY id",
         )?;
         let rows = statement.query_map([], |row| {
             Ok((
@@ -806,11 +873,13 @@ impl Database {
                 row.get::<_, i64>(1)?,
                 row.get::<_, i64>(2)?,
                 row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
                 row.get::<_, i64>(8)?,
+                row.get::<_, i64>(9)?,
+                row.get::<_, i64>(10)?,
             ))
         })?;
         let mut attempts = Vec::new();
@@ -820,6 +889,8 @@ impl Database {
                 batch_id,
                 sequence,
                 state,
+                started_unix_millis,
+                finished_unix_millis,
                 failure,
                 artifact,
                 cache_hit,
@@ -832,6 +903,8 @@ impl Database {
                 sequence: u32::try_from(sequence)
                     .map_err(|_| Error::Contract("attempt sequence overflow".into()))?,
                 state: PersistentState::parse(&state)?,
+                started_unix_millis,
+                finished_unix_millis,
                 failure,
                 artifact_directory: artifact.map(PathBuf::from),
                 cache_hit: cache_hit != 0,
@@ -1269,6 +1342,49 @@ mod tests {
         database.retry_job(job_id).unwrap();
         let remaining = database.claim_next_attempt().unwrap().unwrap();
         assert_eq!(remaining.batch_ordinal, 1);
+    }
+
+    #[test]
+    fn terminal_job_can_be_cloned_without_mutating_original_history() {
+        let mut database = Database::open_in_memory().unwrap();
+        let profile_id = profile(&mut database);
+        let job_id = database
+            .enqueue_job(&new_job(profile_id), &batches(1))
+            .unwrap();
+        let attempt = database.claim_next_attempt().unwrap().unwrap();
+        database
+            .complete_attempt(
+                attempt.attempt_id,
+                Path::new("/tmp/original-artifact"),
+                &"a".repeat(64),
+                false,
+            )
+            .unwrap();
+
+        let rerun_id = database.clone_terminal_job(job_id).unwrap();
+        let original = database.job(job_id).unwrap();
+        let rerun = database.job(rerun_id).unwrap();
+
+        assert_eq!(original.state, PersistentState::Succeeded);
+        assert_eq!(rerun.state, PersistentState::Queued);
+        assert_eq!(rerun.succeeded_batches, 0);
+        assert_eq!(rerun.pending_batches, 1);
+        assert!(database.attempts_for_job(rerun_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn job_snapshots_expose_stable_identity_timing_and_cpu_metadata() {
+        let mut database = Database::open_in_memory().unwrap();
+        let profile_id = profile(&mut database);
+        let job_id = database
+            .enqueue_job(&new_job(profile_id), &batches(1))
+            .unwrap();
+        let snapshot = database.job(job_id).unwrap();
+
+        assert_eq!(snapshot.cpu_preset, CpuPreset::Balanced);
+        assert!(snapshot.created_unix_millis > 0);
+        assert!(snapshot.updated_unix_millis >= snapshot.created_unix_millis);
+        assert!(!snapshot.profile_json.is_empty());
     }
 
     #[test]

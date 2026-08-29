@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+use std::process::{Child, Command};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -27,6 +29,114 @@ use storage_paths::{StorageDefaults, StoragePathsRequest, StoragePathsView};
 struct RunnerState {
     tokens: Mutex<HashMap<i64, CancellationToken>>,
     top_gear_pipelines: Mutex<HashSet<String>>,
+}
+
+#[derive(Default)]
+struct SleepPreventionState {
+    #[cfg(target_os = "macos")]
+    child: Mutex<Option<Child>>,
+    #[cfg(target_os = "windows")]
+    guard: Mutex<Option<WindowsSleepGuard>>,
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsSleepGuard {
+    stop: std::sync::mpsc::Sender<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsSleepGuard {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_sleep_guard() -> Result<WindowsSleepGuard, String> {
+    const ES_CONTINUOUS: u32 = 0x8000_0000;
+    const ES_SYSTEM_REQUIRED: u32 = 0x0000_0001;
+    unsafe extern "system" {
+        fn SetThreadExecutionState(flags: u32) -> u32;
+    }
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let thread = std::thread::spawn(move || {
+        // SAFETY: SetThreadExecutionState accepts a bitmask and has no pointer arguments.
+        let enabled = unsafe { SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) } != 0;
+        let _ = ready_tx.send(enabled);
+        if enabled {
+            let _ = stop_rx.recv();
+            // SAFETY: This clears the assertion on the same thread that created it.
+            let _ = unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
+        }
+    });
+    if !ready_rx.recv().unwrap_or(false) {
+        let _ = thread.join();
+        return Err("Windows rejected the sleep prevention request".into());
+    }
+    Ok(WindowsSleepGuard {
+        stop: stop_tx,
+        thread: Some(thread),
+    })
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for SleepPreventionState {
+    fn drop(&mut self) {
+        if let Ok(child) = self.child.get_mut()
+            && let Some(mut child) = child.take()
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+#[tauri::command]
+fn set_sleep_prevention(
+    state: tauri::State<'_, SleepPreventionState>,
+    enabled: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut guard = state
+            .child
+            .lock()
+            .map_err(|_| "sleep prevention state lock was poisoned".to_owned())?;
+        if enabled && guard.is_none() {
+            let pid = std::process::id().to_string();
+            let child = Command::new("/usr/bin/caffeinate")
+                .args(["-i", "-w", &pid])
+                .spawn()
+                .map_err(|error| format!("could not prevent sleep: {error}"))?;
+            *guard = Some(child);
+        } else if !enabled && let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            child
+                .wait()
+                .map_err(|error| format!("could not stop sleep prevention: {error}"))?;
+        }
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut current = state
+            .guard
+            .lock()
+            .map_err(|_| "sleep prevention state lock was poisoned".to_owned())?;
+        if enabled && current.is_none() {
+            *current = Some(windows_sleep_guard()?);
+        } else if !enabled {
+            *current = None;
+        }
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("sleep prevention is unavailable on this platform".into())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -840,6 +950,20 @@ async fn quick_retry(app: tauri::AppHandle, job_id: i64) -> Result<JobView, Stri
 }
 
 #[tauri::command]
+async fn quick_rerun(app: tauri::AppHandle, job_id: i64) -> Result<JobView, String> {
+    let worker_app = app.clone();
+    let (service, rerun_id, token) = tauri::async_runtime::spawn_blocking(move || {
+        let service = desktop_service(&worker_app)?;
+        let (rerun_id, token) = service.rerun(job_id).map_err(|error| error.to_string())?;
+        Ok::<_, String>((service, rerun_id, token))
+    })
+    .await
+    .map_err(|error| format!("job rerun task failed: {error}"))??;
+    spawn_dispatch(&app, service.clone(), rerun_id, token)?;
+    service.job(rerun_id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn quick_result(app: tauri::AppHandle, job_id: i64) -> Result<QuickResultView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         desktop_service(&app)?
@@ -1094,6 +1218,38 @@ async fn top_gear_retry(
 }
 
 #[tauri::command]
+async fn top_gear_rerun(
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<TopGearSessionView, String> {
+    let worker_app = app.clone();
+    let (service, runtime, started) = tauri::async_runtime::spawn_blocking(move || {
+        let service = desktop_service(&worker_app)?;
+        let runtime = manager(&worker_app)?
+            .doctor_active()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "SimulationCraft is not installed".to_owned())?;
+        let started = service
+            .rerun_top_gear(&session_id, &runtime)
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>((service, runtime, started))
+    })
+    .await
+    .map_err(|error| format!("Top Gear rerun task failed: {error}"))??;
+    if let (Some(job_id), Some(token)) = (started.job_id, started.token) {
+        spawn_top_gear_pipeline(
+            &app,
+            service,
+            started.view.id.clone(),
+            runtime,
+            job_id,
+            token,
+        )?;
+    }
+    Ok(started.view)
+}
+
+#[tauri::command]
 async fn top_gear_result(
     app: tauri::AppHandle,
     session_id: String,
@@ -1241,6 +1397,7 @@ pub fn run() {
         .plugin(tauri_plugin_wdio_webdriver::init());
     builder
         .manage(RunnerState::default())
+        .manage(SleepPreventionState::default())
         .setup(|app| {
             let storage = initialize_storage(app.handle())
                 .map_err(|error| std::io::Error::other(format!("storage setup failed: {error}")))?;
@@ -1249,6 +1406,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             application_contract,
+            set_sleep_prevention,
             storage_paths_get,
             storage_paths_save,
             storage_paths_reset,
@@ -1270,6 +1428,7 @@ pub fn run() {
             quick_job_status,
             quick_cancel,
             quick_retry,
+            quick_rerun,
             quick_result,
             quick_export,
             quick_recover,
@@ -1281,6 +1440,7 @@ pub fn run() {
             top_gear_advance,
             top_gear_cancel,
             top_gear_retry,
+            top_gear_rerun,
             top_gear_result,
             top_gear_export,
             top_gear_sessions,

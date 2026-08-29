@@ -133,6 +133,7 @@ pub struct TopGearSessionView {
     pub total_executions: usize,
     pub can_advance: bool,
     pub pipeline_failure: Option<String>,
+    pub created_unix_millis: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -422,6 +423,7 @@ impl DesktopService {
                 + session.action_states.len(),
             can_advance,
             pipeline_failure: session.pipeline_failure,
+            created_unix_millis: low.created_unix_millis,
         })
     }
 
@@ -468,7 +470,23 @@ impl DesktopService {
                 + session.finalist_keys.len(),
             can_advance: false,
             pipeline_failure: session.pipeline_failure,
+            created_unix_millis: low.created_unix_millis,
         })
+    }
+
+    pub fn rerun_top_gear(
+        &self,
+        session_id: &str,
+        runtime: &RuntimeDoctor,
+    ) -> Result<StartedTopGear> {
+        let session = self.read_top_gear_session(session_id)?;
+        let state = self.top_gear_status(session_id)?;
+        if matches!(state.current_job.state.as_str(), "queued" | "running") {
+            return Err(Error::InvalidRequest(
+                "active Top Gear sessions cannot be rerun".into(),
+            ));
+        }
+        self.start_top_gear(&session.request, runtime)
     }
 
     pub fn top_gear_sessions(&self) -> Result<Vec<TopGearSessionView>> {

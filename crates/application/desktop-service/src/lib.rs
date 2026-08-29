@@ -253,10 +253,30 @@ pub struct AttemptView {
     pub id: i64,
     pub sequence: u32,
     pub state: String,
+    pub started_unix_millis: i64,
+    pub finished_unix_millis: Option<i64>,
     pub failure: Option<String>,
     pub cache_hit: bool,
     pub stdout_log_truncated: bool,
     pub stderr_log_truncated: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunProfileView {
+    pub name: String,
+    pub class: String,
+    pub specialization: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSettingsView {
+    pub iterations: u32,
+    pub max_time_seconds: u32,
+    pub desired_targets: u16,
+    pub fight_style: String,
+    pub threads: u16,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -269,6 +289,12 @@ pub struct JobView {
     pub succeeded_batches: u32,
     pub pending_batches: u32,
     pub attempts: Vec<AttemptView>,
+    pub created_unix_millis: i64,
+    pub updated_unix_millis: i64,
+    pub cpu_preset: String,
+    pub profile: RunProfileView,
+    pub settings: RunSettingsView,
+    pub recent_diagnostics: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -366,24 +392,16 @@ impl DesktopService {
         Ok(())
     }
 
+    pub fn rerun(&self, job_id: i64) -> Result<(i64, CancellationToken)> {
+        let mut queue = self.queue()?;
+        let rerun_id = queue.database_mut().clone_terminal_job(job_id)?;
+        Ok((rerun_id, queue.cancel_handle(rerun_id).token()))
+    }
+
     pub fn job(&self, job_id: i64) -> Result<JobView> {
         let queue = self.queue()?;
         let snapshot = queue.database().job(job_id)?;
-        let attempts = queue
-            .database()
-            .attempts_for_job(job_id)?
-            .into_iter()
-            .map(attempt_view)
-            .collect();
-        Ok(JobView {
-            id: snapshot.id,
-            state: snapshot.state.as_str().into(),
-            cancel_requested: snapshot.cancel_requested,
-            failure: snapshot.failure,
-            succeeded_batches: snapshot.succeeded_batches,
-            pending_batches: snapshot.pending_batches,
-            attempts,
-        })
+        job_view(&queue, snapshot)
     }
 
     pub fn recent_jobs(&self) -> Result<Vec<JobView>> {
@@ -392,23 +410,7 @@ impl DesktopService {
             .database()
             .recent_jobs(200)?
             .into_iter()
-            .map(|snapshot| {
-                let attempts = queue
-                    .database()
-                    .attempts_for_job(snapshot.id)?
-                    .into_iter()
-                    .map(attempt_view)
-                    .collect();
-                Ok(JobView {
-                    id: snapshot.id,
-                    state: snapshot.state.as_str().into(),
-                    cancel_requested: snapshot.cancel_requested,
-                    failure: snapshot.failure,
-                    succeeded_batches: snapshot.succeeded_batches,
-                    pending_batches: snapshot.pending_batches,
-                    attempts,
-                })
-            })
+            .map(|snapshot| job_view(&queue, snapshot))
             .collect()
     }
 
@@ -937,11 +939,84 @@ fn attempt_view(attempt: AttemptSnapshot) -> AttemptView {
         id: attempt.id,
         sequence: attempt.sequence,
         state: attempt.state.as_str().into(),
+        started_unix_millis: attempt.started_unix_millis,
+        finished_unix_millis: attempt.finished_unix_millis,
         failure: attempt.failure,
         cache_hit: attempt.cache_hit,
         stdout_log_truncated: attempt.stdout_log_truncated,
         stderr_log_truncated: attempt.stderr_log_truncated,
     }
+}
+
+fn job_view(
+    queue: &PersistentQueue,
+    snapshot: simshredder_storage::JobSnapshot,
+) -> Result<JobView> {
+    let profile: serde_json::Value = serde_json::from_str(&snapshot.profile_json)?;
+    let string = |key: &str| {
+        profile
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned()
+    };
+    let number = |key: &str| {
+        profile
+            .pointer(&format!("/simulation/{key}"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    };
+    let attempts = queue.database().attempts_for_job(snapshot.id)?;
+    let mut recent_diagnostics = attempts
+        .iter()
+        .rev()
+        .filter_map(|attempt| attempt.failure.as_deref().map(bounded_diagnostic))
+        .take(3)
+        .collect::<Vec<_>>();
+    if let Some(attempt) = attempts.last() {
+        for stream in [LogStream::Stderr, LogStream::Stdout] {
+            let bytes = queue.database().read_log(attempt.id, stream)?;
+            if !bytes.is_empty() {
+                let start = bytes.len().saturating_sub(4096);
+                recent_diagnostics.push(String::from_utf8_lossy(&bytes[start..]).into_owned());
+            }
+        }
+    }
+    recent_diagnostics.truncate(5);
+    Ok(JobView {
+        id: snapshot.id,
+        state: snapshot.state.as_str().into(),
+        cancel_requested: snapshot.cancel_requested,
+        failure: snapshot.failure,
+        succeeded_batches: snapshot.succeeded_batches,
+        pending_batches: snapshot.pending_batches,
+        attempts: attempts.into_iter().map(attempt_view).collect(),
+        created_unix_millis: snapshot.created_unix_millis,
+        updated_unix_millis: snapshot.updated_unix_millis,
+        cpu_preset: snapshot.cpu_preset.as_str().into(),
+        profile: RunProfileView {
+            name: string("name"),
+            class: string("class"),
+            specialization: string("specialization"),
+        },
+        settings: RunSettingsView {
+            iterations: u32::try_from(number("iterations")).unwrap_or_default(),
+            max_time_seconds: u32::try_from(number("max_time_seconds")).unwrap_or_default(),
+            desired_targets: u16::try_from(number("desired_targets")).unwrap_or_default(),
+            fight_style: profile
+                .pointer("/simulation/fight_style")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_owned(),
+            threads: u16::try_from(number("threads")).unwrap_or_default(),
+        },
+        recent_diagnostics,
+    })
+}
+
+fn bounded_diagnostic(value: &str) -> String {
+    const MAX_DIAGNOSTIC_CHARS: usize = 4096;
+    value.chars().take(MAX_DIAGNOSTIC_CHARS).collect()
 }
 
 fn read_regular(path: &Path) -> Result<Vec<u8>> {

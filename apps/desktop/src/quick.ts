@@ -96,6 +96,8 @@ export type AttemptView = {
   id: number;
   sequence: number;
   state: string;
+  startedUnixMillis: number;
+  finishedUnixMillis: number | null;
   failure: string | null;
   cacheHit: boolean;
   stdoutLogTruncated: boolean;
@@ -110,6 +112,12 @@ export type JobView = {
   succeededBatches: number;
   pendingBatches: number;
   attempts: AttemptView[];
+  createdUnixMillis: number;
+  updatedUnixMillis: number;
+  cpuPreset: CpuChoice;
+  profile: { name: string; class: string; specialization: string };
+  settings: { iterations: number; maxTimeSeconds: number; desiredTargets: number; fightStyle: string; threads: number };
+  recentDiagnostics: string[];
 };
 
 export type StatisticalMetric = {
@@ -280,6 +288,10 @@ export function quickCancel(jobId: number): Promise<JobView> {
 
 export function quickRetry(jobId: number): Promise<JobView> {
   return invoke("quick_retry", { jobId });
+}
+
+export function quickRerun(jobId: number): Promise<JobView> {
+  return invoke("quick_rerun", { jobId });
 }
 
 export function quickResult(jobId: number): Promise<QuickResultView> {

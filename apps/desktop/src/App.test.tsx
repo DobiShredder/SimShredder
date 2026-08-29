@@ -95,7 +95,13 @@ const succeededJob: JobView = {
   failure: null,
   succeededBatches: 1,
   pendingBatches: 0,
-  attempts: [{ id: 8, sequence: 1, state: "succeeded", failure: null, cacheHit: false, stdoutLogTruncated: false, stderrLogTruncated: false }],
+  attempts: [{ id: 8, sequence: 1, state: "succeeded", startedUnixMillis: 1_788_000_000_000, finishedUnixMillis: 1_788_000_030_000, failure: null, cacheHit: false, stdoutLogTruncated: false, stderrLogTruncated: false }],
+  createdUnixMillis: 1_788_000_000_000,
+  updatedUnixMillis: 1_788_000_030_000,
+  cpuPreset: "balanced",
+  profile: { name: "Core", class: "warrior", specialization: "fury" },
+  settings: { iterations: 10_000, maxTimeSeconds: 300, desiredTargets: 1, fightStyle: "Patchwerk", threads: 4 },
+  recentDiagnostics: [],
 };
 
 const topGearPrepared = {
@@ -140,6 +146,7 @@ const topGearSession = (stage: "low_precision" | "medium_precision" | "high_prec
   totalExecutions: 4,
   canAdvance: false,
   pipelineFailure: null,
+  createdUnixMillis: 1_788_000_000_000,
 });
 
 const topGearResultFixture = {
@@ -285,8 +292,10 @@ describe("application shell", () => {
       if (command === "top_gear_result") return Promise.resolve(topGearResultFixture);
       if (command === "top_gear_export") return Promise.resolve({ directory: "/Documents/SimShredder Exports/top-gear-tg-test", fileCount: 5 });
       if (command === "top_gear_delete" || command === "quick_delete") return Promise.resolve();
+      if (command === "top_gear_rerun") return Promise.resolve({ ...topGearSession("low_precision"), id: "tg-rerun" });
       if (command === "quick_prepare") return Promise.resolve(prepared);
       if (command === "quick_start" || command === "quick_job_status") return Promise.resolve(succeededJob);
+      if (command === "quick_rerun") return Promise.resolve({ ...succeededJob, id: 70, state: "queued", succeededBatches: 0, pendingBatches: 1, attempts: [] });
       if (command === "quick_result") return Promise.resolve(quickResultFixture);
       if (command === "quick_export") return Promise.resolve({ directory: "/Documents/SimShredder Exports/quick-sim-7", fileCount: 5 });
       return Promise.reject(new Error("unexpected command: " + command));
@@ -493,6 +502,23 @@ describe("application shell", () => {
     expect(screen.getByText("Ready")).toBeVisible();
   });
 
+  it("lets the user control completion notifications and sleep prevention", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const notifications = screen.getByRole("checkbox", { name: /Completion notifications/ });
+    const preventSleep = screen.getByRole("checkbox", { name: /Prevent system sleep/ });
+    expect(notifications).not.toBeChecked();
+    expect(preventSleep).toBeChecked();
+    await user.click(notifications);
+    expect(notifications).toBeChecked();
+    expect(window.localStorage.getItem("simshredder.runNotifications")).toBe("true");
+    await user.click(preventSleep);
+    expect(preventSleep).not.toBeChecked();
+    expect(window.localStorage.getItem("simshredder.preventSleepDuringRuns")).toBe("false");
+  });
+
   it("keeps empty tool titles separate from their import guidance", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -607,11 +633,9 @@ describe("application shell", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("Talent loadoutCgEAAAAAAAA");
     expect(screen.queryByRole("button", { name: "View on Wowhead" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Start analysis" }));
-    expect((await screen.findAllByText("Succeeded"))[0]).toBeVisible();
-    expect(screen.getByRole("progressbar")).toHaveAccessibleName("1 of 1 batches complete");
-    await expectNoAutomatedAccessibilityViolations();
-    await user.click(screen.getByRole("button", { name: "View result" }));
     expect(await screen.findByText("123,456.7")).toBeVisible();
+    expect(screen.getByRole("button", { name: /Core · fury/ })).toHaveTextContent("Succeeded");
+    await expectNoAutomatedAccessibilityViolations();
     expect(screen.getByRole("heading", { name: "Damage and healing breakdown" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Resources" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Buffs" })).toBeVisible();
@@ -726,15 +750,15 @@ describe("application shell", () => {
 
     await user.click(screen.getByRole("button", { name: "History" }));
     expect(await screen.findByRole("heading", { name: "Run history" })).toBeVisible();
-    expect(screen.getByText("Session tg-test")).toBeVisible();
-    expect(screen.getByText("Session tg-older")).toBeVisible();
+    expect(screen.getByText(/Session tg-test/)).toBeVisible();
+    expect(screen.getByText(/Session tg-older/)).toBeVisible();
     const historyEntries = screen.getAllByRole("listitem");
     await user.click(within(historyEntries.find((entry) => entry.textContent?.includes("tg-older"))!).getByRole("button", { name: "Open result" }));
 
-    const chooser = await screen.findByRole("combobox", { name: "Completed result" });
-    expect(within(chooser).getAllByRole("option")).toHaveLength(2);
+    const chooser = await screen.findByRole("list", { name: "Completed results" });
+    expect(within(chooser).getAllByRole("button")).toHaveLength(2);
     expect(mockInvoke).toHaveBeenCalledWith("top_gear_result", { sessionId: "tg-older" });
-    await user.selectOptions(chooser, "top-gear-tg-test");
+    await user.click(within(chooser).getAllByRole("button")[0]);
     expect(await screen.findByRole("heading", { name: "Gear Optimizer result" })).toBeVisible();
     expect(mockInvoke).toHaveBeenCalledWith("top_gear_result", { sessionId: "tg-test" });
   });
@@ -745,12 +769,28 @@ describe("application shell", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "History" }));
-    expect(await screen.findByText("Session tg-test")).toBeVisible();
+    expect(await screen.findByText(/Session tg-test/)).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Delete Gear Optimizer Session tg-test" }));
     expect(screen.getByRole("dialog")).toHaveTextContent("The run record and artifacts used only by this run will be permanently deleted");
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete run" }));
 
-    await waitFor(() => expect(screen.queryByText("Session tg-test")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText(/Session tg-test/)).not.toBeInTheDocument());
     expect(mockInvoke).toHaveBeenCalledWith("top_gear_delete", { sessionId: "tg-test" });
+  });
+
+  it("filters terminal history and starts an exact rerun as a new persistent identity", async () => {
+    recoveredQuickJobs = [succeededJob, { ...succeededJob, id: 8, state: "failed", profile: { ...succeededJob.profile, name: "Other" } }];
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "History" }));
+    await user.type(screen.getByRole("textbox", { name: /Search/ }), "Core");
+    expect(screen.getByText(/Job #7/)).toBeVisible();
+    expect(screen.queryByText(/Job #8/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Run again" }));
+
+    expect(mockInvoke).toHaveBeenCalledWith("quick_rerun", { jobId: 7 });
+    expect(await screen.findByRole("heading", { name: "Job status" })).toBeVisible();
+    expect(screen.getByText("Job #70")).toBeVisible();
   });
 });
