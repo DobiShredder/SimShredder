@@ -70,6 +70,7 @@ export function EntityTooltip({ model }: { model: TooltipModel }) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLSpanElement>(null);
   const closeTimer = useRef<number | null>(null);
+  const suppressRestoredFocus = useRef(false);
   const Icon = model.kind === "item" ? Box : Sparkles;
 
   const cancelClose = () => {
@@ -122,6 +123,7 @@ export function EntityTooltip({ model }: { model: TooltipModel }) {
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setVisible(false);
+        suppressRestoredFocus.current = true;
         triggerRef.current?.focus();
       }
     };
@@ -175,7 +177,13 @@ export function EntityTooltip({ model }: { model: TooltipModel }) {
         aria-label={t("tooltip.show", { title: model.title })}
         className={`semantic-icon semantic-icon-${model.kind}`}
         onClick={openForAction}
-        onFocus={show}
+        onFocus={() => {
+          if (suppressRestoredFocus.current) {
+            suppressRestoredFocus.current = false;
+            return;
+          }
+          show();
+        }}
         ref={triggerRef}
         type="button"
       >

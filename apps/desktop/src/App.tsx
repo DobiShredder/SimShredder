@@ -299,7 +299,7 @@ export function App() {
           ) : page === "jobs" ? (
             <JobsPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} selected={selectedRun} onSelect={setSelectedRun} onQuickJob={updateJob} onTopGearSession={updateTopGearSession} onResult={openResult} />
           ) : page === "results" ? (
-            <ResultsPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} selected={selectedResult} onSelect={setSelectedResult} />
+            <ResultsPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} selected={selectedResult} onSelect={setSelectedResult} onRerun={rerun} />
           ) : page === "history" ? (
             <HistoryPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} onOpenRun={openRun} onOpenResult={openResult} onDelete={deleteRun} onRerun={rerun} />
           ) : page === "settings" ? (

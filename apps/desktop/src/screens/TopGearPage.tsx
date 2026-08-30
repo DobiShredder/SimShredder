@@ -61,6 +61,13 @@ const memberSlots = (slot: CandidateSlot): GearSlot[] => slot === "finger" ? ["f
 const budgetCurrencies = ["adventurer_mistcrest", "veteran_mistcrest", "champion_mistcrest", "hero_mistcrest", "myth_mistcrest", "spark_of_tides"] as const;
 const unlimitedResourceValue = 99_999;
 const nonNegativeInteger = (value: number) => Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+const candidateOrigin = (variant: ItemVariant) => variant.key.startsWith("worn-")
+  ? "equipped"
+  : variant.key.startsWith("bag-")
+    ? "bag"
+    : variant.key.startsWith("virtual-")
+      ? "virtual"
+      : "manual";
 
 export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimRequest | null; onStarted: (session: TopGearSessionView) => void; onImport: () => void }) {
   const { t } = useTranslation();
@@ -99,6 +106,13 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
   const hasCostedUpgradeCandidates = useMemo(() => (request?.variants ?? []).some((variant) => variant.enabled && variant.changed && budgetCurrencies.some((currency) => (variant.cost[currency] ?? 0) > 0)), [request?.variants]);
   const hasCatalystCandidates = useMemo(() => (request?.variants ?? []).some((variant) => variant.enabled && variant.changed && variant.catalyst), [request?.variants]);
   const hasDebugUpgradePaths = (request?.upgradeMetadata?.itemUpgradePaths?.length ?? 0) > 0;
+  const largestReduciblePool = variantsBySlot
+    .filter(([slot, variants]) => !memberSlots(slot).every((member) => request?.lockedSlots.includes(member)) && variants.filter((variant) => !variant.changed || variant.enabled).length > memberSlots(slot).length)
+    .map(([slot, variants]) => ({ slot, factor: Math.max(1, variants.filter((variant) => !variant.changed || variant.enabled).length / memberSlots(slot).length) }))
+    .sort((left, right) => right.factor - left.factor)[0] ?? null;
+  const optionalAxisFactor = request == null ? 1 : Math.max(1,
+    request.talentLoadouts.filter((candidate) => candidate.enabled).length
+    * Object.values(request.profileOptions).reduce((product, candidates) => product * Math.max(1, candidates.filter((candidate) => candidate.enabled).length), 1));
 
   const itemTooltip = (variant: ItemVariant) => itemTooltipModel({
     id: variant.sourceItemId,
@@ -239,6 +253,14 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
     });
     setPreview(null);
   };
+  const keepOnlyBaselineOptions = () => {
+    setRequest({
+      ...request,
+      talentLoadouts: request.talentLoadouts.map((candidate) => ({ ...candidate, enabled: !candidate.changed })),
+      profileOptions: Object.fromEntries(Object.entries(request.profileOptions).map(([axis, candidates]) => [axis, candidates.map((candidate) => ({ ...candidate, enabled: !candidate.changed }))])),
+    });
+    setPreview(null);
+  };
 
   const refresh = async () => {
     setBusy(true); setError(null);
@@ -323,7 +345,31 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
           const locked = memberSlots(slot).every((member) => request.lockedSlots.includes(member));
           return <article className="slot-candidate-card" key={slot}>
             <header><strong>{t(`topGear.slot_${slot}`)}</strong><button aria-label={t(locked ? "topGear.unlockSlot" : "topGear.lockSlot", { slot: t(`topGear.slot_${slot}`) })} className="icon-button" type="button" onClick={() => toggleSlotLock(slot)}>{locked ? <Lock aria-hidden="true" size={15} /> : <Unlock aria-hidden="true" size={15} />}</button></header>
-            <ul>{variants.map((variant) => <li className="candidate-item-row" key={variant.key}><EntityTooltip model={itemTooltip(variant)} /><label className="candidate-check"><input checked={!variant.changed || (variant.enabled && !locked)} disabled={!variant.changed || locked} type="checkbox" onChange={(event) => updateCandidate(variant.key, event.target.checked)} /><span><strong>{variant.displayName ?? t("tooltip.itemTitle", { id: variant.sourceItemId })}</strong><small>{variant.changed ? t("topGear.candidate") : t("topGear.worn")} · {variant.simcOptions.ilevel ? t("topGear.itemLevelValue", { level: variant.simcOptions.ilevel }) : `ID ${variant.sourceItemId}`}</small></span></label></li>)}</ul>
+            <ul>{variants.map((variant) => {
+              const selected = !variant.changed || (variant.enabled && !locked);
+              const currentRank = variant.upgrade?.currentRank ?? variant.rank;
+              const targetRank = request.targetRankOverrides[variant.upgrade?.ownedItemKey ?? variant.key] ?? variant.upgrade?.maxRank;
+              return <li className="candidate-item-row" key={variant.key}>
+                <EntityTooltip model={itemTooltip(variant)} />
+                <label className="candidate-check">
+                  <input checked={selected} disabled={!variant.changed || locked} type="checkbox" onChange={(event) => updateCandidate(variant.key, event.target.checked)} />
+                  <span className="candidate-copy">
+                    <span className="candidate-badges"><span className="candidate-origin-badge">{t(`topGear.origin_${candidateOrigin(variant)}`)}</span><span className="candidate-state-badge">{t(selected ? "topGear.selected" : "topGear.notSelected")}</span></span>
+                    <strong>{variant.displayName ?? t("tooltip.itemTitle", { id: variant.sourceItemId })}</strong>
+                    <small>{t("topGear.itemIdValue", { id: variant.sourceItemId })} · {variant.simcOptions.ilevel ? t("topGear.itemLevelValue", { level: variant.simcOptions.ilevel }) : t("topGear.itemLevelUnavailable")}</small>
+                    <small>{t("topGear.gemEnchantState", { gems: variant.gemIds.length ? variant.gemIds.join("/") : t("tooltip.none"), enchant: variant.enchantId ?? t("tooltip.none") })}</small>
+                    <small>{targetRank == null ? t("topGear.currentOnlyUpgrade") : t("topGear.upgradeState", { current: currentRank, target: targetRank })}</small>
+                    <small>{t(variant.catalyst ? "topGear.catalystConfirmed" : "topGear.catalystNotConfirmed")}</small>
+                    {locked && variant.changed ? <span className="candidate-exclusion">{t("topGear.excludedSlotLocked")}</span>
+                      : !variant.enabled ? <span className="candidate-exclusion">{t("topGear.excludedNotSelected")}</span>
+                        : request.enhancementPolicy === "current_state" && variant.actions.some((action) => action.kind === "upgrade") ? <span className="candidate-exclusion">{t("topGear.excludedCurrentPolicy")}</span>
+                          : variant.catalyst && request.catalystCharges < 1 ? <span className="candidate-exclusion">{t("topGear.excludedCatalystBudget")}</span>
+                            : request.enhancementPolicy === "budget_constrained" && Object.entries(variant.cost).some(([currency, cost]) => cost > Math.max(0, (request.balances[currency] ?? 0) - (request.reserves[currency] ?? 0))) ? <span className="candidate-exclusion">{t("topGear.excludedCurrencyBudget")}</span>
+                              : null}
+                  </span>
+                </label>
+              </li>;
+            })}</ul>
           </article>;
         })}</div>
         <details className="inline-disclosure"><summary>{t("topGear.addExactItem")}</summary><div className="exact-item-form"><label>{t("topGear.itemSlot")}<select value={itemSlot} onChange={(event) => setItemSlot(event.target.value as GearSlot)}>{slotOrder.filter((slot) => !["shirt", "tabard", "finger2", "trinket2"].includes(slot)).map((slot) => <option key={slot} value={slot}>{t(`topGear.slot_${candidateSlot(slot)}`)}</option>)}</select></label><label>{t("topGear.itemId")}<input inputMode="numeric" value={itemId} onChange={(event) => setItemId(event.target.value)} /></label><label>{t("topGear.itemNameOptional")}<input value={itemName} onChange={(event) => setItemName(event.target.value)} /></label><label>{t("topGear.itemOptions")}<input placeholder="bonus_id=… , context=…" value={itemOptions} onChange={(event) => setItemOptions(event.target.value)} /></label><button className="secondary-button" disabled={!itemId} type="button" onClick={addExactItem}>{t("topGear.addItemCandidate")}</button></div><small>{t("topGear.itemSearchBoundary")}</small></details>
@@ -432,7 +478,7 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
         <ul className="variant-list">{request.variants.map((variant) => <li key={variant.key}><span className="variant-identity"><EntityTooltip model={itemTooltip(variant)} /><span>{t(`topGear.slot_${candidateSlot(variant.slot)}`)} · {variant.sourceItemId}</span></span><small>{variant.changed ? t("topGear.candidate") : t("topGear.worn")} · {variant.gemIds.length} {t("topGear.gemsShort")} · {variant.enchantId ?? "—"}</small>{variant.changed ? <button type="button" className="text-button" onClick={() => { setRequest({ ...request, variants: request.variants.filter((item) => item.key !== variant.key) }); setPreview(null); }}>{t("topGear.remove")}</button> : null}</li>)}</ul>
       </section>
 
-      {preview ? <section className="preview-card" aria-live="polite"><h2>{t("topGear.preview")}</h2><div className="metric-grid"><article><span>{t("topGear.raw")}</span><strong>{preview.rawCombinations}</strong></article><article><span>{t("topGear.valid")}</span><strong>{preview.validCombinations}</strong></article><article><span>{t("topGear.executions")}</span><strong>{preview.executionCount}</strong></article><article><span>{t("topGear.rule")}</span><strong>{preview.ruleRevision}</strong></article></div><details className="rejection-details"><summary>{t("topGear.rejections")}</summary><ul>{Object.entries(preview.rejections).map(([reason, count]) => <li key={reason}><span>{t(`topGear.rejection_${reason}`)}</span><strong>{count}</strong></li>)}</ul></details>{preview.estimated ? <p className="status-warning"><span aria-hidden="true" />{t("topGear.estimated")}</p> : null}<p className="safe-note">{preview.ruleSource}</p></section> : null}
+      {preview ? <section className="preview-card" aria-live="polite"><h2>{t("topGear.preview")}</h2><div className="metric-grid"><article><span>{t("topGear.raw")}</span><strong>{preview.rawCombinations}</strong></article><article><span>{t("topGear.valid")}</span><strong>{preview.validCombinations}</strong></article><article><span>{t("topGear.executions")}</span><strong>{t("topGear.executionUpperBound", { count: preview.executionCount })}</strong></article><article><span>{t("topGear.workload")}</span><strong>{t(`topGear.workload_${preview.validCombinations <= 64 ? "small" : preview.validCombinations <= 512 ? "medium" : "large"}`)}</strong><small>{t("topGear.safeLimit", { limit: request.combinationLimit })}</small></article></div><div className="stage-count-grid"><article><span>{t("topGear.lowStage")}</span><strong>{preview.validCombinations}</strong><small>{t("topGear.exactCandidates")}</small></article><article><span>{t("topGear.mediumStage")}</span><strong>≤ {preview.validCombinations}</strong><small>{t("topGear.survivorBound")}</small></article><article><span>{t("topGear.highStage")}</span><strong>≤ {preview.validCombinations}</strong><small>{t("topGear.survivorBound")}</small></article></div><div className="workload-advice"><h3>{t("topGear.reduceWorkload")}</h3><p>{t("topGear.workloadSummary", { count: preview.validCombinations, limit: request.combinationLimit })}</p><div className="button-row"><button className="secondary-button" disabled={request.combinationLimit <= 256} type="button" onClick={() => { setRequest({ ...request, combinationLimit: 256 }); setPreview(null); }}>{t("topGear.applySafeLimit", { current: preview.validCombinations, reduced: Math.min(preview.validCombinations, 256) })}</button>{largestReduciblePool ? <button className="secondary-button" type="button" onClick={() => toggleSlotLock(largestReduciblePool.slot)}>{t("topGear.applySlotLockReduction", { slot: t(`topGear.slot_${largestReduciblePool.slot}`), current: preview.validCombinations, reduced: Math.ceil(preview.validCombinations / largestReduciblePool.factor) })}</button> : null}<button className="secondary-button" disabled={optionalAxisFactor <= 1} type="button" onClick={keepOnlyBaselineOptions}>{t("topGear.applyOptionalAxisReduction", { current: preview.validCombinations, reduced: Math.ceil(preview.validCombinations / optionalAxisFactor) })}</button></div><small>{t("topGear.reductionConsent")}</small></div><details className="rejection-details"><summary>{t("topGear.rejections")}</summary><ul>{Object.entries(preview.rejections).map(([reason, count]) => <li key={reason}><span>{t(`topGear.rejection_${reason}`)}</span><strong>{count}</strong></li>)}</ul></details>{preview.estimated ? <p className="status-warning"><span aria-hidden="true" />{t("topGear.estimated")}</p> : null}<p className="safe-note">{preview.ruleSource}</p></section> : null}
 
       {error ? <div className="inline-error" role="alert"><strong>{t("topGear.errorTitle")}</strong><code>{error}</code></div> : null}
       <div className="button-row quick-actions"><button className="secondary-button" disabled={busy} type="button" onClick={() => void refresh()}><RefreshCw aria-hidden="true" size={18} />{busy ? t("quick.refreshing") : t("quick.refresh")}</button><button className="primary-button" disabled={busy || !preview} type="button" onClick={() => void start()}><Play aria-hidden="true" size={18} />{busy ? t("quick.starting") : t("topGear.run")}</button></div>

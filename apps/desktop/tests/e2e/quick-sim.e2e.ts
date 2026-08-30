@@ -266,6 +266,12 @@ describe("supported desktop shell", () => {
     await expect($("h2=소모품")).toBeDisplayed();
     await expect($("h2=옴니움 장서")).toBeDisplayed();
     await expect($("h2=특성 로드아웃")).toBeDisplayed();
+    await expect($(".candidate-origin-badge=현재 착용")).toBeDisplayed();
+    await expect($(".candidate-origin-badge=가방")).toBeDisplayed();
+    await expect($(".candidate-state-badge=선택됨")).toBeDisplayed();
+    await expect($("span=저정밀")).toBeDisplayed();
+    await expect($("span=중간 정밀(최대)")).toBeDisplayed();
+    await expect($("h3=계산량 줄이기")).toBeDisplayed();
     await expect($("nav[aria-label='장비 최적화 섹션']")).toBeDisplayed();
     await $(".semantic-icon-item").click();
     const itemTooltipContract = await browser.execute(() => {
@@ -286,6 +292,8 @@ describe("supported desktop shell", () => {
     expect(itemTooltipContract.text).toContain("Wowhead에서 자세히 보기");
     expect(itemTooltipContract).toEqual(expect.objectContaining({ actionClickable: true, panelInsideViewport: true }));
     await browser.keys("Escape");
+    await (await $("h1")).click();
+    await $(".entity-tooltip-panel").waitForDisplayed({ reverse: true, timeout: 5_000 });
     await browser.execute(() => {
       (document.activeElement as HTMLElement | null)?.blur();
       window.scrollTo({ top: 0, left: 0, behavior: "auto" });
@@ -297,6 +305,22 @@ describe("supported desktop shell", () => {
     expect(await browser.checkScreen(`top-gear-options-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(3));
     await browser.execute(() => document.querySelector("#enhancement-policy-heading")?.scrollIntoView({ block: "start", behavior: "auto" }));
     expect(await browser.execute(() => document.body.textContent?.includes("현재 상태로만") ?? false)).toBe(true);
+    await browser.execute(() => {
+      document.documentElement.style.fontSize = "200%";
+      document.querySelector<HTMLElement>("#main-content")?.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    });
+    expectNoDocumentOverflow(await layoutContract());
+    expect(await browser.checkScreen(`top-gear-ko-200-percent-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(3));
+    await browser.execute(() => { document.documentElement.style.fontSize = "100%"; });
+    await setViewport(720, 560);
+    await browser.execute(() => {
+      document.querySelector<HTMLElement>("#main-content")?.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    });
+    expectNoDocumentOverflow(await layoutContract());
+    expect(await browser.checkScreen(`top-gear-ko-min-window-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(3));
+    await setViewport(1024, 674);
 
     if (mode === "live") {
       await expect($("//label[contains(.,'장비 강화를 어떻게 비교할까요?')]//select")).toHaveValue("max_potential");
@@ -322,6 +346,9 @@ describe("supported desktop shell", () => {
       const finalInput = await $("h2=최종 검증 .simc 입력");
       await finalInput.waitForDisplayed({ timeout: autoInstall ? 600_000 : 300_000 });
       await expect($("h2=검증된 장비 조합 순위")).toBeDisplayed();
+      await expect($("h3=추천 변경 사항")).toBeDisplayed();
+      await expect($("button=최종 .simc 입력 복사")).toBeDisplayed();
+      await expect($("button=같은 입력과 설정으로 다시 실행")).toBeDisplayed();
       await expect($$(".result-picker-list [role='listitem']")).toBeElementsArrayOfSize({ gte: 2 });
       await (await $("button=검증된 장비 최적화 산출물 내보내기")).click();
       await expect($("p*=파일 6개를 내보냈습니다")).toBeDisplayed();

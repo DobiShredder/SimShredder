@@ -118,6 +118,7 @@ const topGearPrepared = {
   variants: [
     { key: "worn-head-154029", sourceItemId: 154029, slot: "head", displayName: "Worn Helm", rank: 0, gemIds: [], enchantId: null, simcOptions: {}, cost: {}, actions: [], uniqueGroups: [], setGroups: [], weaponKind: "none", embellishment: false, catalyst: false, enabled: true, changed: false },
     { key: "bag-head-154030", sourceItemId: 154030, slot: "head", displayName: "Candidate Helm", rank: 0, gemIds: [], enchantId: null, simcOptions: {}, cost: {}, actions: [], uniqueGroups: [], setGroups: [], weaponKind: "none", embellishment: false, catalyst: false, enabled: true, changed: true },
+    { key: "manual-head-154031-1", sourceItemId: 154031, slot: "head", displayName: "Manual Helm", rank: 0, gemIds: [], enchantId: null, simcOptions: {}, cost: {}, actions: [], uniqueGroups: [], setGroups: [], weaponKind: "none", embellishment: false, catalyst: false, enabled: false, changed: true },
     { key: "worn-trinket1-1001", sourceItemId: 1001, slot: "trinket1", displayName: "First Worn Trinket", rank: 0, gemIds: [], enchantId: null, simcOptions: {}, cost: {}, actions: [], uniqueGroups: [], setGroups: [], weaponKind: "none", embellishment: false, catalyst: false, enabled: true, changed: false },
     { key: "worn-trinket2-1002", sourceItemId: 1002, slot: "trinket2", displayName: "Second Worn Trinket", rank: 0, gemIds: [], enchantId: null, simcOptions: {}, cost: {}, actions: [], uniqueGroups: [], setGroups: [], weaponKind: "none", embellishment: false, catalyst: false, enabled: true, changed: false },
     { key: "bag-trinket1-2001", sourceItemId: 2001, slot: "trinket1", displayName: "Candidate Trinket", rank: 0, gemIds: [], enchantId: null, simcOptions: { ilevel: "334" }, cost: {}, actions: [], uniqueGroups: [], setGroups: [], weaponKind: "none", embellishment: false, catalyst: false, enabled: true, changed: true },
@@ -632,6 +633,9 @@ describe("application shell", () => {
     await user.click(talentDetails);
     expect(screen.getByRole("dialog")).toHaveTextContent("Talent loadoutCgEAAAAAAAA");
     expect(screen.queryByRole("button", { name: "View on Wowhead" })).not.toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(talentDetails).toHaveFocus();
     await user.click(screen.getByRole("button", { name: "Start analysis" }));
     expect(await screen.findByText("123,456.7")).toBeVisible();
     expect(screen.getByRole("button", { name: /Core · fury/ })).toHaveTextContent("Succeeded");
@@ -667,6 +671,14 @@ describe("application shell", () => {
     expect(screen.getByRole("heading", { name: "Omnium Folio" })).toBeVisible();
     expect(screen.getAllByRole("button", { name: /Show details for .*Helm/ }).length).toBeGreaterThan(0);
     expect(screen.getByRole("checkbox", { name: /Candidate Helm/ })).toBeChecked();
+    expect(screen.getAllByText("Equipped", { selector: ".candidate-origin-badge" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Bag", { selector: ".candidate-origin-badge" }).length).toBeGreaterThan(0);
+    expect(screen.getByText("Manual", { selector: ".candidate-origin-badge" })).toBeVisible();
+    expect(screen.getAllByText("Selected", { selector: ".candidate-state-badge" }).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Item ID 154030/)).toBeVisible();
+    expect(screen.getAllByText("Gems: None · Enchant: None").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Current only (upgrade data unavailable)").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Catalyst: No confirmed use").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Trinkets · choose 2")).toHaveLength(2);
     expect(screen.queryByText("Trinket 1")).not.toBeInTheDocument();
     expect(screen.queryByText("Trinket 2")).not.toBeInTheDocument();
@@ -678,6 +690,10 @@ describe("application shell", () => {
     expect(upgradePolicy).toHaveValue("max_potential");
     expect(screen.getByText(/Open an item upgrade vendor in WoW, run \/simc debug/)).toBeVisible();
     expect(screen.getByText(/Runs automatically at 1%, 0.2%, then 0.05% target error/)).toBeVisible();
+    expect(screen.getByText("Low precision")).toBeVisible();
+    expect(screen.getByText("Medium precision (maximum)")).toBeVisible();
+    expect(screen.getByText("High precision (maximum)")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Reduce the workload" })).toBeVisible();
     expect(screen.queryByRole("heading", { name: "Confirmed currency budget" })).not.toBeInTheDocument();
     await user.selectOptions(upgradePolicy, "budget_constrained");
     expect(await screen.findByRole("heading", { name: "Confirmed currency budget" })).toBeVisible();
@@ -700,6 +716,9 @@ describe("application shell", () => {
     for (const balance of screen.getAllByRole("spinbutton", { name: "Current balance" })) expect(balance).toHaveValue(99_999);
     expect(catalystInput).toHaveValue(1);
     await user.click(screen.getByRole("button", { name: "Lock Head" }));
+    expect(
+      screen.getAllByText("Excluded: slot locked", { selector: ".candidate-exclusion" }),
+    ).toHaveLength(2);
     expect(mockInvoke).toHaveBeenCalledWith("top_gear_prepare", expect.objectContaining({ request: expect.objectContaining({ lockedSlots: ["head"] }) }));
     await user.click(screen.getByRole("button", { name: "Lock Trinkets · choose 2" }));
     expect(mockInvoke).toHaveBeenCalledWith("top_gear_prepare", expect.objectContaining({ request: expect.objectContaining({ lockedSlots: ["head", "trinket1", "trinket2"] }) }));
@@ -724,6 +743,12 @@ describe("application shell", () => {
     expect(await screen.findByText("Verified loadout ranking", {}, { timeout: 2_500 })).toBeVisible();
     expect(screen.getByText("The top result improves on your equipped setup")).toBeVisible();
     expect(screen.getByText("+500 vs. equipped")).toBeVisible();
+    expect(screen.getByText("+0.4% vs. equipped")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Recommended changes" })).toBeVisible();
+    expect(screen.getByText("Equip Candidate Helm")).toBeVisible();
+    expect(screen.getAllByText("Crests", { selector: ".currency-name" }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Copy final .simc input" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Run again with the same input and settings" })).toBeVisible();
     expect(screen.getByText("+500")).toBeVisible();
     expect(screen.getByRole("combobox", { name: "Result filter" })).toBeVisible();
     expect(screen.getByRole("combobox", { name: "Sort by" })).toBeVisible();
@@ -738,6 +763,8 @@ describe("application shell", () => {
     await expectNoAutomatedAccessibilityViolations();
     await user.click(screen.getByRole("button", { name: "Export verified Gear Optimizer artifacts" }));
     expect(await screen.findByText(/Exported 5 files/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Run again with the same input and settings" }));
+    expect(mockInvoke).toHaveBeenCalledWith("top_gear_rerun", { sessionId: "tg-test" });
   });
 
   it("uses History as the saved run archive and switches between completed results", async () => {

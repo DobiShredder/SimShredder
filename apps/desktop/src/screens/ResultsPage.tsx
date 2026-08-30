@@ -9,11 +9,12 @@ import { topGearResult, type TopGearResultView, type TopGearSessionView } from "
 import { EntityTooltip, type TooltipKind, type TooltipModel } from "../tooltips";
 import { TopGearResultsPanel } from "./TopGearResultsPanel";
 
-export function ResultsPage({ quickJobs, topGearSessions, selected, onSelect }: {
+export function ResultsPage({ quickJobs, topGearSessions, selected, onSelect, onRerun }: {
   quickJobs: JobView[];
   topGearSessions: TopGearSessionView[];
   selected: RunReference | null;
   onSelect: (run: RunReference) => void;
+  onRerun: (run: RunReference) => Promise<void>;
 }) {
   const { t } = useTranslation();
   const [quick, setQuick] = useState<QuickResultView | null>(null);
@@ -35,7 +36,7 @@ export function ResultsPage({ quickJobs, topGearSessions, selected, onSelect }: 
   const picker = <section className="result-picker"><label className="run-search"><span><Search aria-hidden="true" size={17} />{t("resultsPage.searchResults")}</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("resultsPage.searchPlaceholder")} /></label><div className="result-picker-list" role="list" aria-label={t("resultsPage.chooseResult")}>{visible.map((entry) => { const Icon = entry.type === "gearOptimizer" ? Layers3 : Gauge; return <div role="listitem" key={entry.key}><button className={sameRun(selected, entry.run) ? "selected" : ""} type="button" onClick={() => onSelect(entry.run)}><Icon aria-hidden="true" size={18} /><span><strong>{entry.characterName} · {entry.specialization}</strong><small>{t(`historyPage.${entry.type}`)} · {new Date(entry.createdUnixMillis).toLocaleString()} · {entry.settings.fightStyle}, {entry.settings.desiredTargets}</small></span><em>{t(`jobsPage.${entry.state}`)}</em></button></div>; })}</div>{!visible.length ? <p className="muted">{t("resultsPage.noSearchResults")}</p> : null}</section>;
   if (!completed.length) return <div className="page placeholder-page"><p className="eyebrow">{t("resultsPage.eyebrow")}</p><h1>{t("resultsPage.noResult")}</h1><p>{t("resultsPage.noResultBody")}</p></div>;
   if (error) return <div className="page results-page"><p className="eyebrow">{t("resultsPage.eyebrow")}</p><h1>{t("resultsPage.loadFailed")}</h1>{picker}<div className="inline-error" role="alert"><code>{error}</code></div></div>;
-  if (gear) return <TopGearResultsPanel result={gear} picker={picker} />;
+  if (gear) return <TopGearResultsPanel result={gear} picker={picker} onRerun={() => onRerun({ kind: "topGear", sessionId: gear.sessionId })} />;
   if (quick) return <QuickResultPanel result={quick} picker={picker} />;
   return <div className="page results-page"><p className="eyebrow">{t("resultsPage.eyebrow")}</p><h1>{t("resultsPage.loading")}</h1>{picker}</div>;
 }
