@@ -139,6 +139,7 @@ jobs:
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --location --max-redirs 1 --max-filesize 1048576 \
+            --retry 5 --retry-delay 2 --retry-all-errors \
             --output "$RUNNER_TEMP/published-runtime-catalog.json" \
             'https://github.com/DobiShredder/SimShredder/releases/download/simc-runtime-catalog/runtime-catalog.json'
           cmp "$RUNNER_TEMP/runtime-catalog.json" "$RUNNER_TEMP/published-runtime-catalog.json"

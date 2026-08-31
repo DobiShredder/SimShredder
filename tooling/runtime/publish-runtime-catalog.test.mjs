@@ -46,6 +46,7 @@ test("workflow keeps signing secrets out of commands, artifacts and unchanged jo
   assert.match(workflow, /trap cleanup EXIT/);
   assert.match(workflow, /node tooling\/runtime\/sign-runtime-catalog\.mjs/);
   assert.doesNotMatch(workflow, /cargo run[\s\S]{0,200}sign-runtime-catalog/);
+  assert.match(workflow, /--retry 5 --retry-delay 2 --retry-all-errors/);
   assert.doesNotMatch(workflow, /set -x|echo ["']?\$RUNTIME_CATALOG_SIGNING_KEY_PEM/);
   assert.doesNotMatch(workflow, /upload-artifact[\s\S]{0,500}runtime-catalog-signing-key/);
 });
