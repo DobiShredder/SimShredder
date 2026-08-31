@@ -244,6 +244,7 @@ describe("application shell", () => {
         storagePaths = { ...defaultStoragePaths };
         return Promise.resolve(storagePaths);
       }
+      if (command === "window_state_reset") return Promise.resolve();
       if (command === "character_profiles") return Promise.resolve(storedProfiles);
       if (command === "character_profile_save_import") {
         const request = (arguments_ as { request: ReturnType<typeof import("./quick").defaultQuickRequest> }).request;
@@ -454,7 +455,7 @@ describe("application shell", () => {
     });
   });
 
-  it("prepares the pinned runtime from the settings screen", async () => {
+  it("prepares the discovered runtime from the settings screen", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -465,27 +466,47 @@ describe("application shell", () => {
     expect(mockInvoke).toHaveBeenCalledWith("runtime_install_latest");
   });
 
-  it("does not offer a nightly build whose availability was not confirmed", async () => {
+  it("keeps a healthy installed runtime ready when nightly discovery is unavailable", async () => {
     runtimeStatusResult = {
       ...readyRuntime,
       availableConfirmed: false,
       availableBuild: "removed1",
-      diagnostic: "SIMSHREDDER_RUNTIME_CATALOG_STALE:deadbee|HTTP 404",
+      diagnostic: "SIMSHREDDER_RUNTIME_NETWORK_UNAVAILABLE|HTTP 404",
     };
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    expect(await screen.findByText("Not currently available")).toBeVisible();
-    expect(screen.getByText(/Build deadbee was removed from the official nightly server/)).toBeVisible();
+    expect(await screen.findByText("Update status")).toBeVisible();
+    expect(await screen.findByText("Using the installed version · latest status unavailable")).toBeVisible();
+    expect(screen.getByText("Ready")).toBeVisible();
+    expect(screen.queryByText("Update information is stale")).not.toBeInTheDocument();
+    expect(screen.queryByText(/deadbee/)).not.toBeInTheDocument();
+    expect(screen.queryByText("SimulationCraft could not be prepared")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Install update" })).not.toBeInTheDocument();
+  });
+
+  it("shows a generic discovery notice when no runtime is installed", async () => {
+    runtimeStatusResult = {
+      ...missingRuntime,
+      availableConfirmed: false,
+      availableBuild: "removed1",
+      diagnostic: "SIMSHREDDER_RUNTIME_NETWORK_UNAVAILABLE|HTTP 404",
+    };
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByText("Installation information is unavailable")).toBeVisible();
+    expect(screen.getByText("Not currently available")).toBeVisible();
+    expect(screen.getByText("SimulationCraft updates could not be checked because the network is unavailable. The installed build remains active.")).toBeVisible();
+    expect(screen.queryByText(/deadbee/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Download and install" })).not.toBeInTheDocument();
   });
 
   it("localizes stable runtime network diagnostics without exposing backend details", () => {
     expect(formatRuntimeError("SIMSHREDDER_RUNTIME_NETWORK_UNAVAILABLE|connection refused", i18n.t))
       .toBe("SimulationCraft updates could not be checked because the network is unavailable. The installed build remains active.");
-    expect(formatRuntimeError("SIMSHREDDER_RUNTIME_CATALOG_UNAVAILABLE|HTTP 404", i18n.t))
-      .toBe("The signed SimulationCraft catalog is currently unavailable. The installed build remains active; try again later.");
     expect(formatRuntimeError("SIMSHREDDER_RUNTIME_INSTALL_FAILED|raw Rust error", i18n.t))
       .toBe("SimulationCraft could not be installed or verified. The installed build remains active.");
   });
@@ -613,6 +634,17 @@ describe("application shell", () => {
 
     expect(mockOpen).toHaveBeenCalledWith(expect.objectContaining({ directory: true, multiple: false }));
     expect(screen.getByRole("textbox", { name: /Simulation history and working files/ })).toHaveValue("/Volumes/Fast/SimShredder History");
+  });
+
+  it("resets the remembered window layout from settings", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByRole("button", { name: "Reset window position and size" }));
+
+    expect(mockInvoke).toHaveBeenCalledWith("window_state_reset");
+    expect(await screen.findByText("The window was restored to its default size and centered.")).toBeVisible();
   });
 
   it("completes import, preview, persistent job, result, and raw artifact flow", async () => {

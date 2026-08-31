@@ -4,8 +4,9 @@ use clap::{Parser, Subcommand};
 #[cfg(target_os = "macos")]
 use simc_adapter::discover_latest_macos;
 use simc_adapter::{
-    RuntimeManifest, download_verified, install_supported_artifact, run_benchmark,
-    run_executable_contract, validate_supported_binary,
+    RuntimeManifest, check_artifact_availability, discover_latest_supported, download_available,
+    download_verified, install_supported_artifact, run_benchmark, run_executable_contract,
+    validate_supported_binary,
 };
 
 #[derive(Debug, Parser)]
@@ -24,6 +25,13 @@ enum Commands {
     Download {
         manifest: PathBuf,
         directory: PathBuf,
+    },
+    Availability {
+        manifest: PathBuf,
+    },
+    Latest {
+        directory: PathBuf,
+        manifest: PathBuf,
     },
     Install {
         manifest: PathBuf,
@@ -74,6 +82,22 @@ fn main() -> anyhow_free::Result<()> {
         } => {
             let manifest = read_manifest(&manifest)?;
             println!("{}", download_verified(&manifest, &directory)?.display());
+        }
+        Commands::Availability { manifest } => {
+            let manifest = read_manifest(&manifest)?;
+            check_artifact_availability(&manifest)?;
+            println!("available {}", manifest.filename);
+        }
+        Commands::Latest {
+            directory,
+            manifest,
+        } => {
+            let available = discover_latest_supported()?;
+            let (resolved, artifact) = download_available(&available, &directory)?;
+            let mut bytes = serde_json::to_vec_pretty(&resolved)?;
+            bytes.push(b'\n');
+            fs::write(manifest, bytes)?;
+            println!("{}", artifact.display());
         }
         Commands::Install {
             manifest,

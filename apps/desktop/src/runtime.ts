@@ -52,10 +52,7 @@ export function formatRuntimeDataDate(value: string | null, locale: string): str
 
 export function formatRuntimeError(reason: unknown, t: TFunction): string {
   const message = String(reason);
-  const stale = message.match(/SIMSHREDDER_RUNTIME_CATALOG_STALE:([0-9a-f]{7,40})/);
-  if (stale) return t("runtime.catalogStale", { build: stale[1] });
   if (message.includes("SIMSHREDDER_RUNTIME_NETWORK_UNAVAILABLE|")) return t("runtime.networkUnavailable");
-  if (message.includes("SIMSHREDDER_RUNTIME_CATALOG_UNAVAILABLE|")) return t("runtime.catalogUnavailable");
   if (message.includes("SIMSHREDDER_RUNTIME_INSTALL_FAILED|")) return t("runtime.installFailed");
   return message;
 }

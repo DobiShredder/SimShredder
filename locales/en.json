@@ -38,13 +38,14 @@
     "damagedDetail": "The installed build needs to be checked in Settings.",
     "checking": "Checking the installed runtime…",
     "installTitle": "Prepare SimulationCraft",
-    "installBody": "SimShredder downloads the pinned Retail Live build directly from the official SimulationCraft server, verifies its size and SHA-256, and installs it only for your account.",
+    "installBody": "SimShredder checks the official SimulationCraft nightly page, downloads the latest Retail Live build for this computer, and installs it only for your account.",
     "noAdmin": "No administrator access, system PATH, or system-wide install is required.",
     "available": "Available build",
+    "updateStatus": "Update status",
     "availabilityUnconfirmed": "Not currently available",
-    "catalogStale": "Build {{build}} was removed from the official nightly server. Keep using the installed build and check again after the signed catalog is updated.",
+    "usingInstalledUnconfirmed": "Using the installed version · latest status unavailable",
+    "sourceWarningTitle": "Installation information is unavailable",
     "networkUnavailable": "SimulationCraft updates could not be checked because the network is unavailable. The installed build remains active.",
-    "catalogUnavailable": "The signed SimulationCraft catalog is currently unavailable. The installed build remains active; try again later.",
     "installFailed": "SimulationCraft could not be installed or verified. The installed build remains active.",
     "active": "Active build",
     "dataDate": "Game data date",
@@ -73,6 +74,14 @@
     "label": "Supported versions",
     "platform": "Apple Silicon · macOS 26+ · Windows x64",
     "game": "World of Warcraft Retail Live"
+  },
+  "windowState": {
+    "title": "Window position and size",
+    "body": "SimShredder restores the last normal window position, size, and maximized state. Minimized and full-screen states are not restored.",
+    "reset": "Reset window position and size",
+    "resetting": "Resetting…",
+    "resetDone": "The window was restored to its default size and centered.",
+    "errorTitle": "The window layout could not be reset"
   },
   "icons": {
     "title": "WoW icons",

@@ -6,6 +6,7 @@ const windows = process.platform === "win32";
 const application = path.resolve(`../../target/debug/simshredder-desktop${windows ? ".exe" : ""}`);
 const testAppData = path.resolve("../../target/wdio-app-data");
 const autoInstall = process.env.SIMSHREDDER_E2E_AUTO_INSTALL === "1";
+const keepAppData = process.env.SIMSHREDDER_E2E_KEEP_APP_DATA === "1";
 const baselineVariant = windows ? "windows-ci" : process.env.CI ? "macos-ci" : "macos-retina";
 const baselineFolder = path.resolve("tests/e2e/baseline", baselineVariant);
 const e2eWindow = { width: 1024, height: 674 };
@@ -21,7 +22,8 @@ if (authorizedCiCapture && (!process.env.CI || !acceptBaseline)) {
 
 function prepareLiveRuntime() {
   process.env.SIMSHREDDER_TEST_APP_DATA = testAppData;
-  fs.rmSync(testAppData, { recursive: true, force: true });
+  if (!keepAppData) fs.rmSync(testAppData, { recursive: true, force: true });
+  if (keepAppData) return;
   if (autoInstall) {
     const artifact = process.env.SIMSHREDDER_E2E_RUNTIME_ARTIFACT;
     if (artifact) {

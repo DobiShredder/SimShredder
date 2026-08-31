@@ -4,24 +4,22 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Mutex,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::Serialize;
-use simc_adapter::{RuntimeManifest, check_artifact_availability};
+use simc_adapter::{AvailableRuntime, discover_latest_supported};
 use simshredder_desktop_service::{
     CharacterProfileView, DesktopService, ExportView, JobView, PreparedQuickSim, PreparedTopGear,
     QuickResultView, QuickSimRequest, TopGearRequest, TopGearResultView, TopGearSessionView,
 };
 use simshredder_icon_cache::{CacheStatus, IconCache, read_validated_raster};
 use simshredder_job_runner::CancellationToken;
-use simshredder_runtime_manager::{
-    RuntimeDoctor, RuntimeManager, RuntimeRecord, TrustedCatalogKey, download_production_catalog,
-};
+use simshredder_runtime_manager::{RuntimeDoctor, RuntimeManager, RuntimeRecord};
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 
 mod storage_paths;
+mod window_state;
 
 use storage_paths::{StorageDefaults, StoragePathsRequest, StoragePathsView};
 
@@ -252,12 +250,6 @@ struct RuntimeView {
     diagnostic: Option<String>,
 }
 
-struct CatalogContext {
-    roots: Vec<TrustedCatalogKey>,
-    now: u64,
-    target: (&'static str, &'static str),
-}
-
 fn initialize_storage(app: &tauri::AppHandle) -> Result<StorageState, String> {
     #[cfg(feature = "wdio")]
     if let Some(path) = std::env::var_os("SIMSHREDDER_TEST_APP_DATA") {
@@ -330,109 +322,6 @@ fn configured_paths(app: &tauri::AppHandle) -> Result<StoragePathsView, String> 
     storage_paths::load(&state.control_root, &state.defaults)
 }
 
-fn catalog_context() -> Result<CatalogContext, String> {
-    let roots: Vec<TrustedCatalogKey> = serde_json::from_str(include_str!(
-        "../resources/runtime-catalog-trust-roots.json"
-    ))
-    .map_err(|error| format!("bundled runtime trust roots are invalid: {error}"))?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| "system clock is before the Unix epoch".to_owned())?
-        .as_secs();
-    #[cfg(target_os = "macos")]
-    let target = ("macos", "aarch64");
-    #[cfg(target_os = "windows")]
-    let target = ("windows", "x86_64");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    compile_error!("SimShredder desktop only supports macOS and Windows");
-
-    Ok(CatalogContext { roots, now, target })
-}
-
-fn manifest_from_catalog(
-    catalog: simshredder_runtime_manager::VerifiedCatalog,
-    target: (&str, &str),
-) -> Result<RuntimeManifest, String> {
-    catalog
-        .payload
-        .manifests
-        .into_iter()
-        .find(|manifest| manifest.platform == target.0 && manifest.architecture == target.1)
-        .ok_or_else(|| {
-            format!(
-                "signed runtime catalog has no {} {} asset",
-                target.0, target.1
-            )
-        })
-}
-
-fn cached_available_manifest(manager: &RuntimeManager) -> Result<RuntimeManifest, String> {
-    let context = catalog_context()?;
-    let catalog = manager
-        .verify_and_accept_catalog_or_current_for_target(
-            include_bytes!("../resources/runtime-catalog.json"),
-            &context.roots,
-            context.now,
-            context.target.0,
-            context.target.1,
-        )
-        .map_err(|error| format!("bundled or cached runtime catalog was rejected: {error}"))?;
-    manifest_from_catalog(catalog, context.target)
-}
-
-fn refreshed_available_manifest(manager: &RuntimeManager) -> Result<RuntimeManifest, String> {
-    let context = catalog_context()?;
-
-    let baseline = manager
-        .verify_and_accept_catalog_or_current_for_target(
-            include_bytes!("../resources/runtime-catalog.json"),
-            &context.roots,
-            context.now,
-            context.target.0,
-            context.target.1,
-        )
-        .map_err(|error| format!("bundled or cached runtime catalog was rejected: {error}"))?;
-
-    let catalog = match download_production_catalog().and_then(|bytes| {
-        manager.verify_and_accept_catalog_for_target(
-            &bytes,
-            &context.roots,
-            context.now,
-            context.target.0,
-            context.target.1,
-        )
-    }) {
-        Ok(catalog) => catalog,
-        Err(_) => baseline,
-    };
-    manifest_from_catalog(catalog, context.target)
-}
-
-fn strictly_refreshed_available_manifest(
-    manager: &RuntimeManager,
-) -> Result<RuntimeManifest, String> {
-    let context = catalog_context()?;
-    let bytes = download_production_catalog()
-        .map_err(|error| format!("the signed runtime catalog could not be refreshed: {error}"))?;
-    let catalog = manager
-        .verify_and_accept_catalog_for_target(
-            &bytes,
-            &context.roots,
-            context.now,
-            context.target.0,
-            context.target.1,
-        )
-        .map_err(|error| format!("the refreshed runtime catalog was rejected: {error}"))?;
-    manifest_from_catalog(catalog, context.target)
-}
-
-fn stale_catalog_message(manifest: &RuntimeManifest, detail: impl std::fmt::Display) -> String {
-    format!(
-        "SIMSHREDDER_RUNTIME_CATALOG_STALE:{}|{detail}",
-        manifest.build
-    )
-}
-
 fn runtime_network_message(detail: impl std::fmt::Display) -> String {
     format!("SIMSHREDDER_RUNTIME_NETWORK_UNAVAILABLE|{detail}")
 }
@@ -442,45 +331,26 @@ fn runtime_install_error(error: simshredder_runtime_manager::Error) -> String {
         simshredder_runtime_manager::Error::Adapter(simc_adapter::Error::Http(_)) => {
             runtime_network_message(error)
         }
-        simshredder_runtime_manager::Error::CatalogDownload(_) => {
-            format!("SIMSHREDDER_RUNTIME_CATALOG_UNAVAILABLE|{error}")
-        }
         _ => format!("SIMSHREDDER_RUNTIME_INSTALL_FAILED|{error}"),
     }
 }
 
-fn replacement_for_removed_manifest(
-    manager: &RuntimeManager,
-    removed: &RuntimeManifest,
-) -> Result<RuntimeManifest, String> {
-    let replacement = strictly_refreshed_available_manifest(manager)
-        .map_err(|error| stale_catalog_message(removed, error))?;
-    if !is_strict_replacement(removed, &replacement) {
-        return Err(stale_catalog_message(
-            removed,
-            "the refreshed catalog still points to the removed build",
-        ));
-    }
-    check_artifact_availability(&replacement)
-        .map_err(|error| stale_catalog_message(removed, error))?;
-    Ok(replacement)
-}
-
-fn is_strict_replacement(removed: &RuntimeManifest, replacement: &RuntimeManifest) -> bool {
-    replacement.simc_version != removed.simc_version
-        || replacement.build != removed.build
-        || replacement.filename != removed.filename
-        || replacement.url != removed.url
+fn is_strict_replacement(removed: &AvailableRuntime, replacement: &AvailableRuntime) -> bool {
+    removed.asset.simc_version != replacement.asset.simc_version
+        || removed.asset.build != replacement.asset.build
+        || removed.asset.filename != replacement.asset.filename
+        || removed.url != replacement.url
 }
 
 fn install_with_removed_retry<Install, Refresh>(
-    initial: RuntimeManifest,
+    initial: AvailableRuntime,
     mut install: Install,
     mut refresh: Refresh,
-) -> Result<RuntimeManifest, String>
+) -> Result<AvailableRuntime, String>
 where
-    Install: FnMut(&RuntimeManifest) -> std::result::Result<(), simshredder_runtime_manager::Error>,
-    Refresh: FnMut(&RuntimeManifest) -> Result<RuntimeManifest, String>,
+    Install:
+        FnMut(&AvailableRuntime) -> std::result::Result<(), simshredder_runtime_manager::Error>,
+    Refresh: FnMut(&AvailableRuntime) -> Result<AvailableRuntime, String>,
 {
     match install(&initial) {
         Ok(()) => Ok(initial),
@@ -489,9 +359,8 @@ where
         )) => {
             let replacement = refresh(&initial)?;
             if !is_strict_replacement(&initial, &replacement) {
-                return Err(stale_catalog_message(
-                    &initial,
-                    "the refreshed catalog still points to the removed build",
+                return Err(runtime_network_message(
+                    "the official nightly listing still points to the removed build",
                 ));
             }
             install(&replacement).map_err(runtime_install_error)?;
@@ -692,8 +561,7 @@ fn simc_data_date(hotfix: Option<&str>) -> Option<String> {
 
 fn view_from_manager(
     manager: &RuntimeManager,
-    manifest: RuntimeManifest,
-    update_checked: bool,
+    available: Option<AvailableRuntime>,
 ) -> Result<RuntimeView, String> {
     let state = manager.state().map_err(|error| error.to_string())?;
     let active = state
@@ -701,7 +569,9 @@ fn view_from_manager(
         .as_deref()
         .and_then(|id| state.runtimes.iter().find(|runtime| runtime.id == id))
         .cloned();
-    let available_id = format!("{}-{}", manifest.simc_version, manifest.build);
+    let available_id = available
+        .as_ref()
+        .map(|candidate| format!("{}-{}", candidate.asset.simc_version, candidate.asset.build));
     let doctor = manager.doctor_active();
     let (status, diagnostic, active_data_date) = match doctor {
         Ok(Some(RuntimeDoctor {
@@ -717,13 +587,21 @@ fn view_from_manager(
         state: status,
         update_available: active
             .as_ref()
-            .is_some_and(|record| update_checked && record.id != available_id),
+            .is_some_and(|record| available_id.as_deref().is_some_and(|id| record.id != id)),
+        available_version: available
+            .as_ref()
+            .map(|candidate| candidate.asset.simc_version.clone())
+            .or_else(|| active.as_ref().map(|record| record.simc_version.clone()))
+            .unwrap_or_default(),
+        available_build: available
+            .as_ref()
+            .map(|candidate| candidate.asset.build.clone())
+            .or_else(|| active.as_ref().map(|record| record.build.clone()))
+            .unwrap_or_default(),
+        available_confirmed: available.is_some(),
         active,
         active_data_date,
         installed: state.runtimes,
-        available_version: manifest.simc_version,
-        available_build: manifest.build,
-        available_confirmed: update_checked,
         diagnostic,
     })
 }
@@ -732,8 +610,7 @@ fn view_from_manager(
 async fn runtime_status(app: tauri::AppHandle) -> Result<RuntimeView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let manager = manager(&app)?;
-        let manifest = cached_available_manifest(&manager)?;
-        view_from_manager(&manager, manifest, false)
+        view_from_manager(&manager, None)
     })
     .await
     .map_err(|error| format!("runtime status task failed: {error}"))?
@@ -743,16 +620,13 @@ async fn runtime_status(app: tauri::AppHandle) -> Result<RuntimeView, String> {
 async fn runtime_check_updates(app: tauri::AppHandle) -> Result<RuntimeView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let manager = manager(&app)?;
-        let manifest = refreshed_available_manifest(&manager)?;
-        match check_artifact_availability(&manifest) {
-            Ok(()) => view_from_manager(&manager, manifest, true),
-            Err(error @ simc_adapter::Error::ArtifactUnavailable { .. }) => {
-                let diagnostic = stale_catalog_message(&manifest, error);
-                let mut view = view_from_manager(&manager, manifest, false)?;
-                view.diagnostic = Some(diagnostic);
+        match discover_latest_supported() {
+            Ok(available) => view_from_manager(&manager, Some(available)),
+            Err(error) => {
+                let mut view = view_from_manager(&manager, None)?;
+                view.diagnostic = Some(runtime_network_message(error));
                 Ok(view)
             }
-            Err(error) => Err(runtime_network_message(error)),
         }
     })
     .await
@@ -763,13 +637,17 @@ async fn runtime_check_updates(app: tauri::AppHandle) -> Result<RuntimeView, Str
 async fn runtime_install_latest(app: tauri::AppHandle) -> Result<RuntimeView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let manager = manager(&app)?;
-        let manifest = refreshed_available_manifest(&manager)?;
-        let manifest = install_with_removed_retry(
-            manifest,
-            |candidate| manager.install_and_activate(candidate).map(|_| ()),
-            |removed| replacement_for_removed_manifest(&manager, removed),
+        let available = discover_latest_supported().map_err(runtime_network_message)?;
+        let available = install_with_removed_retry(
+            available,
+            |candidate| {
+                manager
+                    .install_available_and_activate(candidate)
+                    .map(|_| ())
+            },
+            |_| discover_latest_supported().map_err(runtime_network_message),
         )?;
-        view_from_manager(&manager, manifest, true)
+        view_from_manager(&manager, Some(available))
     })
     .await
     .map_err(|error| format!("runtime installation task failed: {error}"))?
@@ -780,8 +658,7 @@ async fn runtime_rollback(app: tauri::AppHandle) -> Result<RuntimeView, String> 
     tauri::async_runtime::spawn_blocking(move || {
         let manager = manager(&app)?;
         manager.rollback().map_err(|error| error.to_string())?;
-        let manifest = cached_available_manifest(&manager)?;
-        view_from_manager(&manager, manifest, false)
+        view_from_manager(&manager, None)
     })
     .await
     .map_err(|error| format!("runtime rollback task failed: {error}"))?
@@ -1365,6 +1242,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .on_window_event(window_state::handle_window_event)
         .register_uri_scheme_protocol("simshredder-icon", |context, request| {
             let response =
                 validated_icon_blob_name(request.uri().path()).and_then(|(name, mime)| {
@@ -1401,12 +1279,16 @@ pub fn run() {
         .setup(|app| {
             let storage = initialize_storage(app.handle())
                 .map_err(|error| std::io::Error::other(format!("storage setup failed: {error}")))?;
+            window_state::initialize(app.handle(), &storage.control_root).map_err(|error| {
+                std::io::Error::other(format!("window state setup failed: {error}"))
+            })?;
             app.manage(storage);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             application_contract,
             set_sleep_prevention,
+            window_state::window_state_reset,
             storage_paths_get,
             storage_paths_save,
             storage_paths_reset,
@@ -1456,20 +1338,19 @@ mod tests {
 
     use super::*;
 
-    fn runtime_manifest(build: &str) -> RuntimeManifest {
-        RuntimeManifest {
-            schema_version: 1,
-            simc_version: "1210-01".into(),
-            game_channel: "live".into(),
-            platform: "macos".into(),
-            architecture: "aarch64".into(),
-            build: build.into(),
-            filename: format!("simc-1210-01-macos-{build}.dmg"),
+    fn available_runtime(build: &str) -> AvailableRuntime {
+        AvailableRuntime {
+            asset: simc_adapter::NightlyAsset {
+                filename: format!("simc-1210-01-macos-{build}.dmg"),
+                simc_version: "1210-01".into(),
+                build: build.into(),
+                platform: "macos".into(),
+                architecture: "aarch64".into(),
+            },
             url: format!(
                 "http://downloads.simulationcraft.org/nightly/simc-1210-01-macos-{build}.dmg"
             ),
             size: 100,
-            sha256: "a".repeat(64),
         }
     }
 
@@ -1530,15 +1411,15 @@ mod tests {
     }
 
     #[test]
-    fn removed_runtime_retry_requires_a_strictly_different_signed_manifest() {
-        let removed = runtime_manifest("deadbee");
+    fn removed_runtime_retry_requires_a_new_official_listing_identity() {
+        let removed = available_runtime("deadbee");
         assert!(!is_strict_replacement(&removed, &removed));
 
-        let replacement = runtime_manifest("newbeef");
+        let replacement = available_runtime("newbeef");
         assert!(is_strict_replacement(&removed, &replacement));
 
         let mut same_identity_substitution = removed.clone();
-        same_identity_substitution.sha256 = "b".repeat(64);
+        same_identity_substitution.size += 1;
         assert!(!is_strict_replacement(
             &removed,
             &same_identity_substitution
@@ -1548,18 +1429,8 @@ mod tests {
     #[test]
     fn stable_runtime_diagnostics_do_not_include_network_details_in_the_code() {
         assert_eq!(
-            stale_catalog_message(&runtime_manifest("deadbee"), "HTTP 404"),
-            "SIMSHREDDER_RUNTIME_CATALOG_STALE:deadbee|HTTP 404"
-        );
-        assert_eq!(
             runtime_network_message("connection refused"),
             "SIMSHREDDER_RUNTIME_NETWORK_UNAVAILABLE|connection refused"
-        );
-        assert!(
-            runtime_install_error(simshredder_runtime_manager::Error::CatalogDownload(
-                "HTTP 404".into()
-            ))
-            .starts_with("SIMSHREDDER_RUNTIME_CATALOG_UNAVAILABLE|")
         );
         assert!(
             runtime_install_error(simshredder_runtime_manager::Error::Adapter(
@@ -1574,7 +1445,7 @@ mod tests {
         let active = Rc::new(RefCell::new("installed-old".to_owned()));
         let cache = Rc::new(RefCell::new(vec!["verified-old".to_owned()]));
         let attempts = Rc::new(RefCell::new(Vec::new()));
-        let removed = runtime_manifest("deadbee");
+        let removed = available_runtime("deadbee");
 
         let result = install_with_removed_retry(
             removed.clone(),
@@ -1583,8 +1454,8 @@ mod tests {
                 let cache = Rc::clone(&cache);
                 let attempts = Rc::clone(&attempts);
                 move |candidate| {
-                    attempts.borrow_mut().push(candidate.build.clone());
-                    if candidate.build == "deadbee" {
+                    attempts.borrow_mut().push(candidate.asset.build.clone());
+                    if candidate.asset.build == "deadbee" {
                         return Err(simshredder_runtime_manager::Error::Adapter(
                             simc_adapter::Error::ArtifactUnavailable {
                                 status: 410,
@@ -1592,16 +1463,16 @@ mod tests {
                             },
                         ));
                     }
-                    cache.borrow_mut().push(candidate.build.clone());
-                    *active.borrow_mut() = candidate.build.clone();
+                    cache.borrow_mut().push(candidate.asset.build.clone());
+                    *active.borrow_mut() = candidate.asset.build.clone();
                     Ok(())
                 }
             },
-            |_| Ok(runtime_manifest("newbeef")),
+            |_| Ok(available_runtime("newbeef")),
         )
         .unwrap();
 
-        assert_eq!(result.build, "newbeef");
+        assert_eq!(result.asset.build, "newbeef");
         assert_eq!(&*attempts.borrow(), &["deadbee", "newbeef"]);
         assert_eq!(&*active.borrow(), "newbeef");
         assert_eq!(&*cache.borrow(), &["verified-old", "newbeef"]);
@@ -1618,7 +1489,7 @@ mod tests {
                     },
                 ))
             },
-            |_| Err("catalog endpoint returned HTTP 404".into()),
+            |_| Err("nightly listing returned HTTP 404".into()),
         );
         assert!(failed.is_err());
         assert_eq!(&*active.borrow(), "installed-old");
@@ -1628,7 +1499,7 @@ mod tests {
     #[test]
     fn removed_retry_rejects_same_manifest_without_a_second_install_attempt() {
         let attempts = RefCell::new(0_u8);
-        let removed = runtime_manifest("deadbee");
+        let removed = available_runtime("deadbee");
         let error = install_with_removed_retry(
             removed.clone(),
             |_| {
@@ -1643,7 +1514,7 @@ mod tests {
             |_| Ok(removed.clone()),
         )
         .unwrap_err();
-        assert!(error.starts_with("SIMSHREDDER_RUNTIME_CATALOG_STALE:deadbee|"));
+        assert!(error.starts_with("SIMSHREDDER_RUNTIME_NETWORK_UNAVAILABLE|"));
         assert_eq!(*attempts.borrow(), 1);
     }
 

@@ -1,14 +1,5 @@
 //! Per-user SimulationCraft installation registry with atomic activation and rollback.
 
-mod catalog;
-
-pub use catalog::{
-    CatalogPayload, CatalogSignature, CatalogTrustState, PRODUCTION_CATALOG_URL, SignedCatalog,
-    TrustedCatalogKey, VerifiedCatalog, download_production_catalog,
-};
-#[cfg(feature = "signing")]
-pub use catalog::{sign_catalog_payload, signing_key_from_pkcs8_pem};
-
 use std::{
     fs,
     io::Write,
@@ -22,8 +13,8 @@ use std::os::unix::fs::PermissionsExt;
 use atomic_write_file::AtomicWriteFile;
 use serde::{Deserialize, Serialize};
 use simc_adapter::{
-    InstalledRuntime, RuntimeManifest, SimcIdentity, download_verified, install_supported_artifact,
-    sha256_file, supported_executable_name, validate_supported_binary,
+    AvailableRuntime, InstalledRuntime, RuntimeManifest, SimcIdentity, download_available,
+    install_supported_artifact, sha256_file, supported_executable_name, validate_supported_binary,
 };
 
 const STATE_SCHEMA_VERSION: u32 = 1;
@@ -46,14 +37,6 @@ pub enum Error {
     RollbackUnavailable,
     #[error("runtime integrity check failed: {0}")]
     Integrity(String),
-    #[error("runtime catalog is invalid: {0}")]
-    InvalidCatalog(String),
-    #[error("runtime catalog download failed: {0}")]
-    CatalogDownload(String),
-    #[error("runtime catalog has no valid signature from a trusted key")]
-    CatalogSignature,
-    #[error("runtime catalog rollback rejected: accepted sequence {accepted}, offered {offered}")]
-    CatalogRollback { accepted: u64, offered: u64 },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -155,10 +138,12 @@ impl RuntimeManager {
         Ok(Some(executable))
     }
 
-    pub fn install_and_activate(&self, manifest: &RuntimeManifest) -> Result<RuntimeDoctor> {
-        manifest.validate()?;
-        let download = download_verified(manifest, &self.download_root())?;
-        self.install_verified_artifact_and_activate(manifest, &download)
+    pub fn install_available_and_activate(
+        &self,
+        available: &AvailableRuntime,
+    ) -> Result<RuntimeDoctor> {
+        let (manifest, download) = download_available(available, &self.download_root())?;
+        self.install_verified_artifact_and_activate(&manifest, &download)
     }
 
     pub fn install_verified_artifact_and_activate(

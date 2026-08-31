@@ -22,6 +22,7 @@ const expectNoDocumentOverflow = (layout: Awaited<ReturnType<typeof layoutContra
 describe("supported desktop shell", () => {
   it("opens the real Tauri app and prepares an exact character-analysis preview", async () => {
     const autoInstall = process.env.SIMSHREDDER_E2E_AUTO_INSTALL === "1";
+    const runtimeOnly = process.env.SIMSHREDDER_E2E_RUNTIME_ONLY === "1";
     const mode = process.env.SIMSHREDDER_E2E_SIMC || autoInstall ? "live" : "offline";
     const languageControl = await $(".topbar select");
     await languageControl.waitForExist({ timeout: 20_000 });
@@ -61,23 +62,48 @@ describe("supported desktop shell", () => {
       await runtimeCheck.waitForExist({ reverse: true, timeout: 20_000 });
     }
     if (autoInstall) {
+      const status = await $(".runtime-pill span");
       const install = await $("button=Download and install");
-      await install.waitForDisplayed({ timeout: 20_000 });
-      await install.click();
-      await expect($(".indeterminate")).toBeDisplayed();
-      await browser.waitUntil(async () => {
-        const diagnostic = await $(".inline-error code");
-        if (await diagnostic.isExisting()) throw new Error(`Automatic SimC install failed: ${await diagnostic.getText()}`);
-        const status = await $(".runtime-pill span");
-        return await status.isExisting() && await status.getText() === "Ready";
-      }, { timeout: 660_000, interval: 1_000 });
+      const readyOrInstall = async () => (
+        await status.isExisting() && await status.getText() === "Ready"
+      ) || await install.isDisplayed();
+      try {
+        await browser.waitUntil(readyOrInstall, { timeout: 5_000, interval: 250 });
+      } catch {
+        await (await $("button=Check again")).click();
+        await browser.waitUntil(readyOrInstall, { timeout: 20_000, interval: 250 });
+      }
+      if (await status.getText() === "Ready") {
+        await expect(status).toHaveText("Ready");
+      } else {
+        await install.click();
+        await expect($(".indeterminate")).toBeDisplayed();
+        try {
+          await browser.waitUntil(async () => {
+            const diagnostic = await $(".inline-error code");
+            if (await diagnostic.isExisting()) throw new Error(`Automatic SimC install failed: ${await diagnostic.getText()}`);
+            const nextStatus = await $(".runtime-pill span");
+            return await nextStatus.isExisting() && await nextStatus.getText() === "Ready";
+          }, { timeout: 180_000, interval: 1_000 });
+        } catch (error) {
+          const runtimeCard = await $("section[aria-labelledby='runtime-card-title']");
+          throw new Error(`Automatic SimC install did not settle: ${await runtimeCard.getText()}`, { cause: error });
+        }
+      }
     }
+    if (runtimeOnly) return;
     await (await $("button[aria-label*='Appearance']")).click();
     await browser.execute(() => {
       (document.activeElement as HTMLElement | null)?.blur();
       window.scrollTo({ top: 0, left: 0, behavior: "auto" });
     });
     expect(await browser.checkScreen(`settings-en-light-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(2));
+
+    const resetWindow = await $("button=Reset window position and size");
+    await resetWindow.scrollIntoView({ block: "center" });
+    await resetWindow.click();
+    await expect($("p=The window was restored to its default size and centered.")).toBeDisplayed();
+    await setViewport(1024, 674);
 
     if (mode === "offline") {
       await (await $("h2=Storage locations")).waitForDisplayed();

@@ -20,8 +20,10 @@ pub enum Error {
     SizeMismatch { expected: u64, actual: u64 },
     #[error("artifact SHA-256 mismatch: expected {expected}, got {actual}")]
     HashMismatch { expected: String, actual: String },
-    #[error("no supported macOS nightly asset was found")]
+    #[error("no supported nightly asset was found")]
     NightlyAssetMissing,
+    #[error("official SimulationCraft nightly listing exceeded 2 MiB")]
+    NightlyListingTooLarge,
     #[error("external command {program} failed with status {status}: {stderr}")]
     CommandFailed {
         program: String,

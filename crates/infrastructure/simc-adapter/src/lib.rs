@@ -12,12 +12,16 @@ mod runner;
 mod windows;
 
 pub use contract::{BenchmarkReport, ContractReport, run_benchmark, run_executable_contract};
-pub use discovery::{NightlyAsset, discover_latest_macos};
+pub use discovery::{
+    AvailableRuntime, NightlyAsset, discover_latest_for_target, discover_latest_macos,
+    discover_latest_supported,
+};
 pub use error::{Error, Result};
 #[cfg(target_os = "macos")]
 pub use macos::{discover_macos_executables, install_macos_dmg, validate_macos_binary};
 pub use manifest::{
-    RuntimeManifest, check_artifact_availability, download_verified, sha256_file, verify_artifact,
+    RuntimeManifest, check_artifact_availability, download_available, download_verified,
+    sha256_file, verify_artifact,
 };
 pub use process::{
     CancelOutput, LogChunk, ProcessControl, ProcessOutput, ProcessStream, SimcIdentity,

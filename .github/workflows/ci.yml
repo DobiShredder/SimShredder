@@ -71,7 +71,7 @@ jobs:
             echo 'capture_gui_baselines requires run_native' >&2
             exit 1
           fi
-      - run: node --test tooling/licenses/generate-node-licenses.test.mjs tooling/licenses/normalize-text-report.test.mjs tooling/runtime/verify-catalog-artifacts.test.mjs tooling/release/audit-public-history.test.mjs tooling/release/verify-manual-release-evidence.test.mjs tooling/release/verify-unsigned-candidate.test.mjs tooling/release/verify-windows-pe.test.mjs
+      - run: node --test tooling/licenses/generate-node-licenses.test.mjs tooling/licenses/normalize-text-report.test.mjs tooling/release/audit-public-history.test.mjs tooling/release/verify-manual-release-evidence.test.mjs tooling/release/verify-unsigned-candidate.test.mjs tooling/release/verify-windows-pe.test.mjs
       - run: node tooling/release/verify-workflow-security.mjs
       - run: node tooling/release/audit-public-history.mjs
 
@@ -128,16 +128,13 @@ jobs:
         with:
           toolchain: 1.98.0
       - run: pnpm install --frozen-lockfile
-      - name: Download the signed-catalog SimulationCraft archive
+      - name: Download the current official SimulationCraft archive
         shell: pwsh
         run: |
           $download = Join-Path $env:RUNNER_TEMP 'verified-simc'
-          $result = Join-Path $env:RUNNER_TEMP 'verified-simc.json'
           $manifest = Join-Path $env:RUNNER_TEMP 'verified-simc-manifest.json'
-          node tooling/runtime/verify-catalog-artifacts.mjs --catalog apps/desktop/src-tauri/resources/runtime-catalog.json --mode full --platform windows --architecture x86_64 --output-directory $download --result-file $result --manifest-file $manifest
-          $verified = @(Get-Content $result -Raw | ConvertFrom-Json)
-          if ($verified.Count -ne 1) { throw "expected one verified Windows runtime, found $($verified.Count)" }
-          $archive = $verified[0].path
+          $archive = cargo run --locked -p simc-adapter --bin simc-contract -- latest $download $manifest
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { throw "official Windows runtime download is missing" }
           "SIMSHREDDER_WINDOWS_ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "SIMSHREDDER_WINDOWS_MANIFEST=$manifest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Verify archive and execute official CLI contract

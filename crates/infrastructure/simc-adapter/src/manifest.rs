@@ -5,11 +5,16 @@ use std::{
     time::Duration,
 };
 
-use reqwest::{StatusCode, Url, blocking::Client, redirect::Policy};
+use reqwest::{
+    StatusCode, Url,
+    blocking::Client,
+    header::{CONTENT_LENGTH, HeaderMap},
+    redirect::Policy,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{Error, Result};
+use crate::{AvailableRuntime, Error, Result};
 
 const OFFICIAL_HOST: &str = "downloads.simulationcraft.org";
 const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
@@ -195,10 +200,108 @@ pub fn download_verified(manifest: &RuntimeManifest, directory: &Path) -> Result
     Ok(destination)
 }
 
-/// Confirms that an exact signed nightly artifact still exists without
-/// downloading its body. Nightly files are routinely replaced upstream, so a
-/// signed catalog can remain cryptographically valid after its artifact has
-/// disappeared.
+/// Downloads a runtime selected directly from the official nightly listing.
+/// The resulting manifest records the observed size and digest for local cache
+/// integrity and installed-runtime recovery; it is not an upstream signature.
+pub fn download_available(
+    available: &AvailableRuntime,
+    directory: &Path,
+) -> Result<(RuntimeManifest, PathBuf)> {
+    if available.size == 0 || available.size > MAX_ARTIFACT_BYTES {
+        return Err(Error::InvalidManifest(
+            "discovered artifact size is out of range".into(),
+        ));
+    }
+    let boundary = discovered_manifest(available, "0".repeat(64));
+    let url = boundary.validate()?;
+    fs::create_dir_all(directory)?;
+    let destination = directory.join(&available.asset.filename);
+    if destination.exists() {
+        let metadata = fs::symlink_metadata(&destination)?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(Error::InvalidManifest(
+                "cached nightly artifact is not a regular file".into(),
+            ));
+        }
+        if metadata.len() == available.size {
+            let manifest = discovered_manifest(available, sha256_file(&destination)?);
+            verify_artifact(&manifest, &destination)?;
+            return Ok((manifest, destination));
+        }
+        fs::remove_file(&destination)?;
+    }
+
+    let client = Client::builder()
+        .redirect(Policy::none())
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(10 * 60))
+        .build()?;
+    let response = client.get(url.clone()).send()?;
+    reject_removed_artifact(response.status(), &url)?;
+    let mut response = response.error_for_status()?;
+    if let Some(length) = declared_content_length(response.headers())
+        && length != available.size
+    {
+        return Err(Error::SizeMismatch {
+            expected: available.size,
+            actual: length,
+        });
+    }
+
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".simc-download-")
+        .tempfile_in(directory)?;
+    let mut digest = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let count = response.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        total = total
+            .checked_add(count as u64)
+            .ok_or(Error::DownloadTooLarge)?;
+        if total > available.size || total > MAX_ARTIFACT_BYTES {
+            return Err(Error::DownloadTooLarge);
+        }
+        digest.update(&buffer[..count]);
+        temporary.write_all(&buffer[..count])?;
+    }
+    temporary.flush()?;
+    temporary.as_file().sync_all()?;
+    if total != available.size {
+        return Err(Error::SizeMismatch {
+            expected: available.size,
+            actual: total,
+        });
+    }
+    let sha256 = format!("{:x}", digest.finalize());
+    temporary
+        .persist_noclobber(&destination)
+        .map_err(|error| error.error)?;
+    let manifest = discovered_manifest(available, sha256);
+    verify_artifact(&manifest, &destination)?;
+    Ok((manifest, destination))
+}
+
+fn discovered_manifest(available: &AvailableRuntime, sha256: String) -> RuntimeManifest {
+    RuntimeManifest {
+        schema_version: 1,
+        simc_version: available.asset.simc_version.clone(),
+        game_channel: "live".into(),
+        platform: available.asset.platform.clone(),
+        architecture: available.asset.architecture.clone(),
+        build: available.asset.build.clone(),
+        filename: available.asset.filename.clone(),
+        url: available.url.clone(),
+        size: available.size,
+        sha256,
+    }
+}
+
+/// Confirms that an exact previously recorded nightly artifact still exists
+/// without downloading its body. Nightly files are routinely replaced upstream.
 pub fn check_artifact_availability(manifest: &RuntimeManifest) -> Result<()> {
     let url = manifest.validate()?;
     let client = Client::builder()
@@ -209,7 +312,7 @@ pub fn check_artifact_availability(manifest: &RuntimeManifest) -> Result<()> {
     let response = client.head(url.clone()).send()?;
     reject_removed_artifact(response.status(), &url)?;
     let response = response.error_for_status()?;
-    if let Some(length) = response.content_length()
+    if let Some(length) = declared_content_length(response.headers())
         && length != manifest.size
     {
         return Err(Error::SizeMismatch {
@@ -218,6 +321,15 @@ pub fn check_artifact_availability(manifest: &RuntimeManifest) -> Result<()> {
         });
     }
     Ok(())
+}
+
+fn declared_content_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(CONTENT_LENGTH)?
+        .to_str()
+        .ok()?
+        .parse::<u64>()
+        .ok()
 }
 
 fn reject_removed_artifact(status: StatusCode, url: &Url) -> Result<()> {
@@ -268,6 +380,21 @@ fn windows_package_version(version: &str) -> Result<String> {
 mod tests {
     use super::*;
 
+    fn available(size: u64) -> AvailableRuntime {
+        AvailableRuntime {
+            asset: crate::NightlyAsset {
+                filename: "simc-1210-01-macos-3487fce.dmg".into(),
+                simc_version: "1210-01".into(),
+                build: "3487fce".into(),
+                platform: "macos".into(),
+                architecture: "aarch64".into(),
+            },
+            url: "http://downloads.simulationcraft.org/nightly/simc-1210-01-macos-3487fce.dmg"
+                .into(),
+            size,
+        }
+    }
+
     fn manifest(hash: String, size: u64) -> RuntimeManifest {
         RuntimeManifest {
             schema_version: 1,
@@ -291,6 +418,29 @@ mod tests {
         artifact.flush().unwrap();
         let hash = sha256_file(artifact.path()).unwrap();
         verify_artifact(&manifest(hash, 7), artifact.path()).unwrap();
+    }
+
+    #[test]
+    fn direct_discovery_reuses_a_bounded_cache_and_records_its_digest() {
+        let temporary = tempfile::tempdir().unwrap();
+        let destination = temporary.path().join("simc-1210-01-macos-3487fce.dmg");
+        fs::write(&destination, b"fixture").unwrap();
+        let (manifest, reused) = download_available(&available(7), temporary.path()).unwrap();
+        assert_eq!(reused, destination);
+        assert_eq!(manifest.sha256, sha256_file(&destination).unwrap());
+        assert_eq!(manifest.size, 7);
+    }
+
+    #[test]
+    fn direct_download_rejects_a_non_official_candidate_before_network_access() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut candidate = available(7);
+        candidate.url = "https://example.com/simc.dmg".into();
+        assert!(matches!(
+            download_available(&candidate, temporary.path()),
+            Err(Error::InvalidManifest(_))
+        ));
+        assert!(fs::read_dir(temporary.path()).unwrap().next().is_none());
     }
 
     #[test]
@@ -388,6 +538,13 @@ mod tests {
             ));
         }
         reject_removed_artifact(StatusCode::OK, &url).unwrap();
+    }
+
+    #[test]
+    fn availability_uses_the_declared_head_content_length() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_LENGTH, "227917588".parse().unwrap());
+        assert_eq!(declared_content_length(&headers), Some(227_917_588));
     }
 
     #[test]

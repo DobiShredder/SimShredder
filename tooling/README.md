@@ -5,7 +5,6 @@
 - `localization/`: 번역 catalog 완전성 검사
 - `licenses/`: package manager 출력에서 배포용 license 보고서를 생성하고 runner별 줄바꿈 차이를 LF로 정규화
 - `release/`: public tag/version 일치, commit-bound artifact provenance, workflow action·credential 경계와 전체 Git history 검증
-- `runtime/`: signed runtime catalog의 공식 URL 경계, availability와 전체 size·SHA-256 검증
 
 Release 검증기 중 `release/verify-windows-clean-user.ps1`은 ephemeral Windows standard account에서 NSIS 설치·GUI launch·제거와 Authenticode 기대 상태를 검증합니다. 공개 evidence에는 임시 account SID를 기록하지 않습니다. `release/verify-macos-clean-user.sh`는 실제 로그인된 macOS standard account에서만 DMG의 per-user copy·기본 `SimShredder` data root·launch를 검사하고 이번 실행이 만든 data를 정리합니다. 기존 data, admin 또는 root account에서는 거부합니다.
 

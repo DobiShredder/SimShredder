@@ -23,9 +23,7 @@ rust-version = "1.98"
 
 [workspace.dependencies]
 atomic-write-file = "0.3.1"
-base64 = "0.22.1"
 clap = { version = "4.5.46", features = ["derive"] }
-ed25519-dalek = "3.0.0"
 regex = "1.11.2"
 reqwest = { version = "0.12.23", default-features = false, features = ["blocking", "rustls-tls"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
