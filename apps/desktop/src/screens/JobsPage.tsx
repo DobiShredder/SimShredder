@@ -9,10 +9,11 @@ import { topGearCancel, topGearRetry, topGearStatus, type TopGearSessionView } f
 
 const active = (state: string) => state === "queued" || state === "running";
 
-export function JobsPage({ quickJobs, topGearSessions, selected, onSelect, onQuickJob, onTopGearSession, onResult }: {
+export function JobsPage({ quickJobs, topGearSessions, selected, runNames, onSelect, onQuickJob, onTopGearSession, onResult }: {
   quickJobs: JobView[];
   topGearSessions: TopGearSessionView[];
   selected: RunReference | null;
+  runNames: Record<string, string>;
   onSelect: (run: RunReference) => void;
   onQuickJob: (job: JobView) => void;
   onTopGearSession: (session: TopGearSessionView) => void;
@@ -21,7 +22,7 @@ export function JobsPage({ quickJobs, topGearSessions, selected, onSelect, onQui
   const { t } = useTranslation();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const entries = useMemo(() => buildRunCatalog(quickJobs, topGearSessions).runs, [quickJobs, topGearSessions]);
+  const entries = useMemo(() => buildRunCatalog(quickJobs, topGearSessions, runNames).runs, [quickJobs, runNames, topGearSessions]);
 
   useEffect(() => {
     if ((!selected || !entries.some((entry) => sameRun(selected, entry.run))) && entries[0]) onSelect(entries[0].run);
@@ -66,7 +67,7 @@ export function JobsPage({ quickJobs, topGearSessions, selected, onSelect, onQui
     <p className="eyebrow">{t("jobsPage.eyebrow")}</p><h1>{t("jobsPage.title")}</h1><p className="settings-lead">{t("jobsPage.body")}</p>
     {entries.length ? <div className="run-workspace"><aside className="run-selector" aria-label={t("jobsPage.runList")}>{entries.map((entry) => {
       const isGear = entry.run.kind === "topGear";
-      return <button aria-current={sameRun(selected, entry.run) ? "true" : undefined} key={runKey(entry.run)} type="button" onClick={() => onSelect(entry.run)}>{isGear ? <Layers3 aria-hidden="true" size={17} /> : <Gauge aria-hidden="true" size={17} />}<span><strong>{entry.characterName} · {entry.specialization}</strong><small>{t(isGear ? "historyPage.gearOptimizer" : "historyPage.characterAnalysis")} · {new Date(entry.createdUnixMillis).toLocaleString()}</small></span><em>{t(`jobsPage.${entry.state}`)}</em></button>;
+      return <button aria-current={sameRun(selected, entry.run) ? "true" : undefined} key={runKey(entry.run)} type="button" onClick={() => onSelect(entry.run)}>{isGear ? <Layers3 aria-hidden="true" size={17} /> : <Gauge aria-hidden="true" size={17} />}<span><strong>{entry.displayName}</strong><small>{entry.characterName} · {entry.specialization} · {t(isGear ? "historyPage.gearOptimizer" : "historyPage.characterAnalysis")} · {new Date(entry.createdUnixMillis).toLocaleString()}</small></span><em>{t(`jobsPage.${entry.state}`)}</em></button>;
     })}</aside><div className="run-detail">
       {quick ? <QuickJobDetail job={quick} busy={busy} error={error} onAction={quickAction} onResult={() => onResult({ kind: "quick", jobId: quick.id })} t={t} /> : null}
       {gear ? <GearJobDetail session={gear} busy={busy} error={error} onAction={gearAction} onResult={() => onResult({ kind: "topGear", sessionId: gear.id })} t={t} /> : null}

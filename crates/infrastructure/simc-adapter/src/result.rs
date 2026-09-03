@@ -2,18 +2,22 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 use simshredder_domain::{
-    NormalizedQuickResult, ResultAction, ResultAplAction, ResultAplBuff, ResultBuff, ResultOptions,
-    ResultPlayer, ResultResource, ResultRuntimeIdentity, StatisticalMetric,
+    NormalizedQuickResult, ResultAction, ResultActorKind, ResultAplAction, ResultAplBuff,
+    ResultBuff, ResultOptions, ResultPlayer, ResultResource, ResultRuntimeIdentity, ResultTimeline,
+    ResultTimelines, StatisticalMetric,
 };
 
 use crate::{Error, Result, SimcIdentity};
 
-pub const NORMALIZED_SCHEMA_VERSION: u32 = 2;
+pub const NORMALIZED_SCHEMA_VERSION: u32 = 3;
 const SUPPORTED_REPORT_VERSION: &str = "2.0.0";
 const MAX_ACTIONS: usize = 256;
 const MAX_BUFFS: usize = 256;
 const MAX_APL_ACTIONS: usize = 100;
 const MAX_APL_BUFFS_PER_ACTION: usize = 64;
+const MAX_TIMELINE_SERIES: usize = 16;
+const MAX_SOURCE_TIMELINE_SAMPLES: usize = 3_600;
+const MAX_TIMELINE_SAMPLES: usize = 360;
 
 pub fn normalize_quick_result(
     bytes: &[u8],
@@ -76,10 +80,19 @@ pub fn normalize_quick_result(
     }
 
     let game_build = integer(&document, "/sim/options/dbc/Live/build_level")?;
+    let target_error = optional_number(&document, "/sim/options/target_error")?.unwrap_or(0.0);
+    if !(0.0..=100.0).contains(&target_error) {
+        return contract("target error is outside its supported range");
+    }
+    let confidence = optional_number(&document, "/sim/options/confidence")?.unwrap_or(0.95);
+    if !(0.0..=1.0).contains(&confidence) || confidence == 0.0 {
+        return contract("confidence is outside its supported range");
+    }
     let actions = normalize_actions(player)?;
     let buffs = normalize_buffs(player)?;
     let resources = normalize_resources(player)?;
     let apl_sequence = normalize_apl_sequence(player)?;
+    let timelines = normalize_timelines(player)?;
     Ok(NormalizedQuickResult {
         schema_version: NORMALIZED_SCHEMA_VERSION,
         report_version: SUPPORTED_REPORT_VERSION.into(),
@@ -104,20 +117,63 @@ pub fn normalize_quick_result(
             max_time_seconds: number(&document, "/sim/options/max_time")?,
             desired_targets: integer(&document, "/sim/options/desired_targets")?,
             fight_style: string(&document, "/sim/options/fight_style")?,
+            target_error,
+            confidence,
+            report_details: optional_bool(&document, "/sim/options/report_details")?,
+            report_pets_separately: optional_bool(
+                &document,
+                "/sim/options/report_pets_separately",
+            )?,
         },
         primary_metric,
         actions,
         buffs,
         resources,
         apl_sequence,
+        timelines,
     })
 }
 
 fn normalize_actions(player: &Value) -> Result<Vec<ResultAction>> {
-    let Some(entries) = optional_array(player, "/stats")? else {
-        return Ok(Vec::new());
-    };
     let mut actions = Vec::new();
+    if let Some(entries) = optional_array(player, "/stats")? {
+        append_actions(entries, "player", ResultActorKind::Player, &mut actions)?;
+    }
+    if let Some(pets) = optional_object(player, "/stats_pets")? {
+        if pets.len() > MAX_TIMELINE_SERIES {
+            return contract("pet actor count exceeds its supported bound");
+        }
+        for (actor, entries) in pets {
+            let actor = bounded_string(actor)
+                .ok_or_else(|| Error::Contract("pet actor name is invalid".into()))?;
+            let entries = entries
+                .as_array()
+                .ok_or_else(|| Error::Contract("pet action statistics are invalid".into()))?;
+            append_actions(
+                entries,
+                &actor,
+                ResultActorKind::PetOrGuardian,
+                &mut actions,
+            )?;
+        }
+    }
+    actions.sort_by(|left, right| {
+        right
+            .share
+            .total_cmp(&left.share)
+            .then_with(|| left.actor.cmp(&right.actor))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    actions.truncate(MAX_ACTIONS);
+    Ok(actions)
+}
+
+fn append_actions(
+    entries: &[Value],
+    actor: &str,
+    actor_kind: ResultActorKind,
+    actions: &mut Vec<ResultAction>,
+) -> Result<()> {
     for entry in entries {
         let kind = required_bounded_string(entry, "/type")?;
         if !matches!(kind.as_str(), "damage" | "heal") {
@@ -148,16 +204,99 @@ fn normalize_actions(player: &Value) -> Result<Vec<ResultAction>> {
             amount_per_fight: amount,
             metric_per_second: per_second,
             share,
+            actor: actor.into(),
+            actor_kind,
         });
     }
-    actions.sort_by(|left, right| {
-        right
-            .share
-            .total_cmp(&left.share)
-            .then_with(|| left.name.cmp(&right.name))
-    });
-    actions.truncate(MAX_ACTIONS);
-    Ok(actions)
+    Ok(())
+}
+
+fn normalize_timelines(player: &Value) -> Result<ResultTimelines> {
+    let collected = player
+        .pointer("/collected_data")
+        .ok_or_else(|| Error::Contract("collected data is missing".into()))?;
+    let damage = match collected.pointer("/timeline_dmg") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(normalize_timeline("damage", "per_second", value)?),
+    };
+    let resources = optional_object(collected, "/resource_timelines")?
+        .into_iter()
+        .flat_map(|entries| entries.iter())
+        .take(MAX_TIMELINE_SERIES)
+        .map(|(name, value)| normalize_timeline(name, "amount", value))
+        .collect::<Result<Vec<_>>>()?;
+    let buffs = optional_array(player, "/buffs")?
+        .into_iter()
+        .flatten()
+        .filter_map(|buff| {
+            buff.pointer("/stack_uptime")
+                .map(|timeline| (buff, timeline))
+        })
+        .take(MAX_TIMELINE_SERIES)
+        .map(|(buff, timeline)| {
+            let internal_name = required_bounded_string(buff, "/name")?;
+            let name = display_name(buff, "/spell_name", &internal_name)?;
+            normalize_timeline(&name, "average_stacks", timeline)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ResultTimelines {
+        damage,
+        resources,
+        buffs,
+    })
+}
+
+fn normalize_timeline(name: &str, unit: &str, value: &Value) -> Result<ResultTimeline> {
+    let name =
+        bounded_string(name).ok_or_else(|| Error::Contract("timeline name is invalid".into()))?;
+    let entries = value
+        .pointer("/data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Contract(format!("timeline data is invalid for {name}")))?;
+    if entries.len() > MAX_SOURCE_TIMELINE_SAMPLES {
+        return contract(format!(
+            "timeline data exceeds its supported bound for {name}"
+        ));
+    }
+    let source = entries
+        .iter()
+        .map(|entry| {
+            finite_number(entry)
+                .filter(|number| *number >= 0.0)
+                .ok_or_else(|| Error::Contract(format!("timeline sample is invalid for {name}")))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let samples = downsample(&source);
+    let statistic = |pointer: &str| -> Result<f64> {
+        optional_number(value, pointer)?
+            .filter(|number| *number >= 0.0)
+            .ok_or_else(|| Error::Contract(format!("timeline statistic is invalid for {name}")))
+    };
+    let mean = statistic("/mean")?;
+    let minimum = statistic("/min")?;
+    let maximum = statistic("/max")?;
+    Ok(ResultTimeline {
+        name,
+        unit: unit.into(),
+        mean,
+        minimum,
+        maximum,
+        samples,
+        source_sample_count: u64::try_from(source.len())
+            .map_err(|_| Error::Contract("timeline sample count is too large".into()))?,
+    })
+}
+
+fn downsample(source: &[f64]) -> Vec<f64> {
+    if source.len() <= MAX_TIMELINE_SAMPLES {
+        return source.to_vec();
+    }
+    (0..MAX_TIMELINE_SAMPLES)
+        .map(|index| {
+            let source_index = index * (source.len() - 1) / (MAX_TIMELINE_SAMPLES - 1);
+            source[source_index]
+        })
+        .collect()
 }
 
 fn normalize_buffs(player: &Value) -> Result<Vec<ResultBuff>> {
@@ -380,6 +519,17 @@ fn optional_number(value: &Value, pointer: &str) -> Result<Option<f64>> {
     }
 }
 
+fn optional_bool(value: &Value, pointer: &str) -> Result<Option<bool>> {
+    match value.pointer(pointer) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(Value::Number(value)) if value.as_u64().is_some_and(|value| value <= 1) => {
+            Ok(value.as_u64().map(|value| value == 1))
+        }
+        Some(_) => contract(format!("JSON boolean is invalid at {pointer}")),
+    }
+}
+
 fn display_name(value: &Value, pointer: &str, internal_name: &str) -> Result<String> {
     Ok(optional_bounded_string(value, pointer)?
         .unwrap_or_else(|| display_internal_name(internal_name)))
@@ -512,6 +662,25 @@ mod tests {
                 "mutation at {pointer} must fail closed"
             );
         }
+
+        for (key, replacement) in [
+            ("target_error", serde_json::json!(-0.1)),
+            ("target_error", serde_json::json!(100.1)),
+            ("confidence", serde_json::json!(0)),
+            ("confidence", serde_json::json!(1.1)),
+        ] {
+            let mut document: Value = serde_json::from_str(fixture).unwrap();
+            document["sim"]["options"][key] = replacement;
+            assert!(
+                normalize_quick_result(
+                    &serde_json::to_vec(&document).unwrap(),
+                    &identity(),
+                    "3487fce"
+                )
+                .is_err(),
+                "invalid option {key} must fail closed"
+            );
+        }
     }
 
     #[test]
@@ -550,6 +719,73 @@ mod tests {
         assert_eq!(result.actions.len(), MAX_ACTIONS);
         assert_eq!(result.apl_sequence.len(), MAX_APL_ACTIONS);
         assert_eq!(result.apl_sequence[0].buffs.len(), MAX_APL_BUFFS_PER_ACTION);
+    }
+
+    #[test]
+    fn preserves_bounded_evidence_timelines_and_pet_actions() {
+        let mut document: Value = serde_json::from_str(include_str!(
+            "../../../../test-data/fixtures/reports/quick-1210-01-3487fce.min.json"
+        ))
+        .unwrap();
+        let samples = (0..(MAX_TIMELINE_SAMPLES + 40))
+            .map(|index| serde_json::json!(index))
+            .collect::<Vec<_>>();
+        let timeline = serde_json::json!({
+            "mean": 199.5,
+            "min": 0.0,
+            "max": 399.0,
+            "data": samples,
+        });
+        document["sim"]["players"][0]["collected_data"]["timeline_dmg"] = timeline.clone();
+        document["sim"]["players"][0]["collected_data"]["resource_timelines"] =
+            serde_json::json!({ "rage": timeline });
+        let pet_action = document.pointer("/sim/players/0/stats/0").unwrap().clone();
+        document["sim"]["players"][0]["stats_pets"] = serde_json::json!({ "wolf": [pet_action] });
+
+        let result = normalize_quick_result(
+            &serde_json::to_vec(&document).unwrap(),
+            &identity(),
+            "3487fce",
+        )
+        .unwrap();
+
+        assert_eq!(result.schema_version, 3);
+        assert_eq!(result.timelines.damage.as_ref().unwrap().samples.len(), 360);
+        assert_eq!(
+            result
+                .timelines
+                .damage
+                .as_ref()
+                .unwrap()
+                .source_sample_count,
+            400
+        );
+        assert!(result.actions.iter().any(|action| {
+            action.actor == "wolf" && action.actor_kind == ResultActorKind::PetOrGuardian
+        }));
+    }
+
+    #[test]
+    fn schema_two_result_defaults_new_exploration_fields() {
+        let normalized = normalize_quick_result(
+            include_bytes!("../../../../test-data/fixtures/reports/quick-1210-01-3487fce.min.json"),
+            &identity(),
+            "3487fce",
+        )
+        .unwrap();
+        let mut legacy = serde_json::to_value(normalized).unwrap();
+        legacy["schema_version"] = serde_json::json!(2);
+        legacy.as_object_mut().unwrap().remove("timelines");
+        for action in legacy["actions"].as_array_mut().unwrap() {
+            action.as_object_mut().unwrap().remove("actor");
+            action.as_object_mut().unwrap().remove("actor_kind");
+        }
+
+        let restored: NormalizedQuickResult = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.schema_version, 2);
+        assert_eq!(restored.actions[0].actor, "player");
+        assert_eq!(restored.actions[0].actor_kind, ResultActorKind::Player);
+        assert_eq!(restored.timelines, ResultTimelines::default());
     }
 
     #[test]

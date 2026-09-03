@@ -139,6 +139,8 @@ export type ResultAction = {
   amount_per_fight: number;
   metric_per_second: number;
   share: number;
+  actor?: string;
+  actor_kind?: "player" | "pet_or_guardian";
 };
 
 export type ResultBuff = {
@@ -175,6 +177,16 @@ export type ResultAplBuff = {
   stacks: number;
 };
 
+export type ResultTimeline = {
+  name: string;
+  unit: "per_second" | "amount" | "average_stacks" | string;
+  mean: number;
+  minimum: number;
+  maximum: number;
+  samples: number[];
+  source_sample_count: number;
+};
+
 export type NormalizedQuickResult = {
   schema_version: number;
   report_version: string;
@@ -198,12 +210,21 @@ export type NormalizedQuickResult = {
     max_time_seconds: number;
     desired_targets: number;
     fight_style: string;
+    target_error?: number;
+    confidence?: number;
+    report_details?: boolean | null;
+    report_pets_separately?: boolean | null;
   };
   primary_metric: StatisticalMetric;
   actions: ResultAction[];
   buffs: ResultBuff[];
   resources: ResultResource[];
   apl_sequence: ResultAplAction[];
+  timelines?: {
+    damage: ResultTimeline | null;
+    resources: ResultTimeline[];
+    buffs: ResultTimeline[];
+  };
 };
 
 export type QuickResultView = {

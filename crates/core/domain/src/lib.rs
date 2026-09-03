@@ -316,6 +316,8 @@ pub struct NormalizedQuickResult {
     pub buffs: Vec<ResultBuff>,
     pub resources: Vec<ResultResource>,
     pub apl_sequence: Vec<ResultAplAction>,
+    #[serde(default)]
+    pub timelines: ResultTimelines,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -328,6 +330,22 @@ pub struct ResultAction {
     pub amount_per_fight: f64,
     pub metric_per_second: f64,
     pub share: f64,
+    #[serde(default = "player_actor_name")]
+    pub actor: String,
+    #[serde(default)]
+    pub actor_kind: ResultActorKind,
+}
+
+fn player_actor_name() -> String {
+    "player".into()
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultActorKind {
+    #[default]
+    Player,
+    PetOrGuardian,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -369,6 +387,24 @@ pub struct ResultAplBuff {
     pub stacks: f64,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ResultTimelines {
+    pub damage: Option<ResultTimeline>,
+    pub resources: Vec<ResultTimeline>,
+    pub buffs: Vec<ResultTimeline>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResultTimeline {
+    pub name: String,
+    pub unit: String,
+    pub mean: f64,
+    pub minimum: f64,
+    pub maximum: f64,
+    pub samples: Vec<f64>,
+    pub source_sample_count: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResultRuntimeIdentity {
     pub simc_version: String,
@@ -394,6 +430,18 @@ pub struct ResultOptions {
     pub max_time_seconds: f64,
     pub desired_targets: u64,
     pub fight_style: String,
+    #[serde(default)]
+    pub target_error: f64,
+    #[serde(default = "default_result_confidence")]
+    pub confidence: f64,
+    #[serde(default)]
+    pub report_details: Option<bool>,
+    #[serde(default)]
+    pub report_pets_separately: Option<bool>,
+}
+
+fn default_result_confidence() -> f64 {
+    0.95
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

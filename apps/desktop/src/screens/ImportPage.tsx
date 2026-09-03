@@ -10,6 +10,8 @@ import {
   setCharacterProfileFavorite,
   type CharacterProfile,
 } from "../profiles";
+import { loadLastRequest } from "../workflowPreferences";
+import { useModalDialog } from "../components/useModalDialog";
 import {
   defaultQuickRequest,
   detectSourceFormat,
@@ -20,7 +22,7 @@ import {
 } from "../quick";
 
 export function ImportPage({ onPrepared }: {
-  onPrepared: (request: QuickSimRequest, preview: PreparedQuickSim) => void;
+  onPrepared: (request: QuickSimRequest, preview: PreparedQuickSim, profileId: string) => void;
 }) {
   const { t } = useTranslation();
   const [source, setSource] = useState("");
@@ -33,6 +35,9 @@ export function ImportPage({ onPrepared }: {
   const [selectedDeleteProfile, setSelectedDeleteProfile] = useState<CharacterProfile | null>(null);
   const [profileBusy, setProfileBusy] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const deleteTrigger = useRef<HTMLButtonElement>(null);
+  const armoryDialog = useModalDialog(Boolean(selectedArmoryProfile), () => setSelectedArmoryProfile(null));
+  const deleteDialog = useModalDialog(Boolean(selectedDeleteProfile), () => setSelectedDeleteProfile(null), () => deleteTrigger.current);
 
   const sortProfiles = (values: CharacterProfile[]) => [...values].sort((left, right) =>
     Number(right.favorite) - Number(left.favorite)
@@ -72,7 +77,7 @@ export function ImportPage({ onPrepared }: {
       const preview = await quickPrepare(request);
       const saved = await saveCharacterProfileImport(request);
       setProfiles((current) => sortProfiles([...current.filter((profile) => profile.id !== saved.id), saved]));
-      onPrepared(request, preview);
+      onPrepared(request, preview, saved.id);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -84,7 +89,9 @@ export function ImportPage({ onPrepared }: {
     setProfileBusy(profile.id);
     setProfilesError(null);
     try {
-      onPrepared(profile.request, await quickPrepare(profile.request));
+      const saved = loadLastRequest(profile.id, "quick");
+      const request = saved ? { ...saved, source: profile.request.source, format: profile.request.format } : profile.request;
+      onPrepared(request, await quickPrepare(request), profile.id);
     } catch (reason) {
       setProfilesError(String(reason));
     } finally {
@@ -110,7 +117,7 @@ export function ImportPage({ onPrepared }: {
       const refreshed = await reloadCharacterProfileFromArmory(selectedArmoryProfile.id);
       replaceProfile(refreshed);
       setSelectedArmoryProfile(null);
-      onPrepared(refreshed.request, await quickPrepare(refreshed.request));
+      onPrepared(refreshed.request, await quickPrepare(refreshed.request), refreshed.id);
     } catch (reason) {
       setProfilesError(String(reason));
     } finally {
@@ -123,7 +130,7 @@ export function ImportPage({ onPrepared }: {
     try {
       const restored = await restorePreviousCharacterProfileInput(profile.id);
       replaceProfile(restored);
-      onPrepared(restored.request, await quickPrepare(restored.request));
+      onPrepared(restored.request, await quickPrepare(restored.request), restored.id);
     } catch (reason) {
       setProfilesError(String(reason));
     } finally {
@@ -196,7 +203,7 @@ export function ImportPage({ onPrepared }: {
                       <RotateCcw aria-hidden="true" size={16} />{t("profiles.restorePrevious")}
                     </button>
                   ) : null}
-                  <button className="text-button profile-delete" disabled={profileBusy === profile.id} onClick={() => setSelectedDeleteProfile(profile)} type="button">
+                  <button className="text-button profile-delete" disabled={profileBusy === profile.id} onClick={(event) => { deleteTrigger.current = event.currentTarget; setSelectedDeleteProfile(profile); }} type="button">
                     <Trash2 aria-hidden="true" size={16} />{t("profiles.delete")}
                   </button>
                 </div>
@@ -230,7 +237,7 @@ export function ImportPage({ onPrepared }: {
       </div>
       {selectedArmoryProfile ? (
         <div className="modal-backdrop">
-          <dialog className="update-dialog" open aria-labelledby="armory-reload-title" aria-describedby="armory-reload-description">
+          <dialog ref={armoryDialog} className="update-dialog" open aria-labelledby="armory-reload-title" aria-describedby="armory-reload-description">
             <p className="eyebrow">{t("profiles.armoryEyebrow")}</p>
             <h2 id="armory-reload-title">{t("profiles.armoryTitle", { name: selectedArmoryProfile.displayName })}</h2>
             <p id="armory-reload-description">{t("profiles.armoryBody")}</p>
@@ -239,14 +246,14 @@ export function ImportPage({ onPrepared }: {
               <button className="primary-button" disabled={!selectedArmoryProfile.armoryRefresh.available || profileBusy === selectedArmoryProfile.id} onClick={() => void reloadFromArmory()} type="button">
                 <RefreshCw aria-hidden="true" size={17} />{t("profiles.armoryConfirm")}
               </button>
-              <button className="secondary-button" autoFocus onClick={() => setSelectedArmoryProfile(null)} type="button">{t("profiles.cancel")}</button>
+              <button className="secondary-button" autoFocus data-modal-initial-focus onClick={() => setSelectedArmoryProfile(null)} type="button">{t("profiles.cancel")}</button>
             </div>
           </dialog>
         </div>
       ) : null}
       {selectedDeleteProfile ? (
         <div className="modal-backdrop">
-          <dialog className="update-dialog" open aria-labelledby="profile-delete-title" aria-describedby="profile-delete-description">
+          <dialog ref={deleteDialog} className="update-dialog" open aria-labelledby="profile-delete-title" aria-describedby="profile-delete-description">
             <p className="eyebrow">{t("profiles.deleteEyebrow")}</p>
             <h2 id="profile-delete-title">{t("profiles.deleteTitle", { name: selectedDeleteProfile.displayName })}</h2>
             <p id="profile-delete-description">{t("profiles.deleteBody")}</p>
@@ -254,7 +261,7 @@ export function ImportPage({ onPrepared }: {
               <button className="danger-button" disabled={profileBusy === selectedDeleteProfile.id} onClick={() => void deleteProfile()} type="button">
                 <Trash2 aria-hidden="true" size={17} />{profileBusy === selectedDeleteProfile.id ? t("profiles.deleting") : t("profiles.deleteConfirm")}
               </button>
-              <button className="secondary-button" autoFocus disabled={profileBusy === selectedDeleteProfile.id} onClick={() => setSelectedDeleteProfile(null)} type="button">{t("profiles.cancel")}</button>
+              <button className="secondary-button" autoFocus data-modal-initial-focus disabled={profileBusy === selectedDeleteProfile.id} onClick={() => setSelectedDeleteProfile(null)} type="button">{t("profiles.cancel")}</button>
             </div>
           </dialog>
         </div>

@@ -201,7 +201,10 @@ describe("supported desktop shell", () => {
       select.dispatchEvent(new Event("change", { bubbles: true }));
     }, "ko");
     await expect($("h1")).toHaveText("시뮬레이션 입력 확인");
-    await browser.execute(() => (document.activeElement as HTMLElement | null)?.blur());
+    await browser.execute(() => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    });
     expect(await browser.checkScreen(`quick-ko-${mode}`, { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(2));
 
     await (await $("summary=고급 옵션")).click();
@@ -241,9 +244,13 @@ describe("supported desktop shell", () => {
       await resultHeading.waitForDisplayed({ timeout: 60_000 });
       await expect(resultHeading).toHaveText(expect.stringContaining("DesktopE2E"));
       await expect($("h2=피해 및 치유 내역")).toBeDisplayed();
+      await expect($("h2=DPS 분포 요약")).toBeDisplayed();
+      await expect($("h2=실행 시계열")).toBeDisplayed();
       await expect($("h2=자원")).toBeDisplayed();
       await expect($("h2=버프")).toBeDisplayed();
       await expect($("h2=행동 순서 표본")).toBeDisplayed();
+      await expect((await $("label*=행동, 대상, 자원 또는 버프 찾기")).$("input")).toBeDisplayed();
+      await expect($("button=상세 보기")).toBeDisplayed();
       await $(".semantic-icon-spell").click();
       const spellTooltipContract = await browser.execute(() => {
         const trigger = document.querySelector<HTMLButtonElement>(".semantic-icon-spell");
@@ -263,10 +270,30 @@ describe("supported desktop shell", () => {
       expect(spellTooltipContract.actionClickable).toBe(true);
       expect(spellTooltipContract.panelInsideViewport).toBe(true);
       await browser.keys("Escape");
+      await browser.execute(() => {
+        document.querySelector<HTMLElement>(".timeline-card")?.scrollIntoView({ block: "center", behavior: "auto" });
+      });
+      await (await $(".timeline-card summary")).click();
+      expect(await browser.checkScreen("result-exploration-ko-live", {
+        ignoreAntialiasing: true,
+        ignore: [$(".evidence-chart")],
+      })).toBeLessThan(visualThreshold(3));
+      await browser.execute(() => {
+        document.querySelector<HTMLElement>(".action-sequence-table")?.scrollIntoView({ block: "center", behavior: "auto" });
+      });
+      await (await $("button=상세 보기")).click();
+      await expect($(".action-snapshot")).toBeDisplayed();
+      await browser.execute(() => {
+        document.querySelector<HTMLElement>(".action-snapshot")?.scrollIntoView({ block: "center", behavior: "auto" });
+      });
+      expect(await browser.checkScreen("result-action-snapshot-ko-live", { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(3));
+      await (await $("button[aria-label*='화면 모드']")).click();
+      expect(await browser.checkScreen("result-action-snapshot-ko-light-live", { ignoreAntialiasing: true })).toBeLessThan(visualThreshold(3));
+      await (await $("button[aria-label*='화면 모드']")).click();
       await expect($("h2=실행 산출물")).toBeDisplayed();
       expect(await browser.checkScreen("result-ko-dark", {
         ignoreAntialiasing: true,
-        ignore: [$(".metric-grid"), $(".result-chart")],
+        ignore: [$(".metric-grid"), $(".distribution-summary"), $(".evidence-chart")],
       })).toBeLessThan(visualThreshold(3));
       await browser.execute(() => {
         document.documentElement.style.fontSize = "200%";
@@ -277,11 +304,17 @@ describe("supported desktop shell", () => {
       expectNoDocumentOverflow(resultLayout);
       expect(await browser.checkScreen("result-ko-200-percent-live", {
         ignoreAntialiasing: true,
-        ignore: [$(".metric-grid"), $(".result-chart")],
+        ignore: [$(".metric-grid"), $(".distribution-summary"), $(".evidence-chart")],
       })).toBeLessThan(visualThreshold(3));
       await browser.execute(() => { document.documentElement.style.fontSize = "100%"; });
       await (await $("button=검증된 산출물 내보내기")).click();
       await expect($("p*=파일 5개를 내보냈습니다")).toBeDisplayed();
+      const quickRunName = await $("//label[contains(.,'작업 이름')]//input");
+      await quickRunName.setValue("E2E 단일 대상");
+      await (await $("button=이름 저장")).click();
+      await expect($("//div[contains(@class,'result-picker-list')]//strong[normalize-space()='E2E 단일 대상']")).toBeDisplayed();
+      await (await $("button=복제 후 편집")).click();
+      await expect($("h1=시뮬레이션 입력 확인")).toBeDisplayed();
     }
 
     await (await $("button=장비 최적화")).click();
@@ -372,12 +405,15 @@ describe("supported desktop shell", () => {
       const finalInput = await $("h2=최종 검증 .simc 입력");
       await finalInput.waitForDisplayed({ timeout: autoInstall ? 600_000 : 300_000 });
       await expect($("h2=검증된 장비 조합 순위")).toBeDisplayed();
-      await expect($("h3=추천 변경 사항")).toBeDisplayed();
+      const recommendationState = await browser.execute(() => document.body.textContent?.includes("추천 변경 사항") || document.body.textContent?.includes("추천하는 장비 또는 강화 변경이 없습니다."));
+      expect(recommendationState).toBe(true);
       await expect($("button=최종 .simc 입력 복사")).toBeDisplayed();
-      await expect($("button=같은 입력과 설정으로 다시 실행")).toBeDisplayed();
+      await expect($("button=같은 설정으로 다시 실행")).toBeDisplayed();
       await expect($$(".result-picker-list [role='listitem']")).toBeElementsArrayOfSize({ gte: 2 });
       await (await $("button=검증된 장비 최적화 산출물 내보내기")).click();
       await expect($("p*=파일 6개를 내보냈습니다")).toBeDisplayed();
+      await (await $("button=복제 후 편집")).click();
+      await expect($("h1=장비와 강화 비교")).toBeDisplayed();
 
       await (await $("button=기록")).click();
       await expect($("h1=실행 기록")).toBeDisplayed();

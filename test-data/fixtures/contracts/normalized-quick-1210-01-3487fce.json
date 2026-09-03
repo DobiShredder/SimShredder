@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "report_version": "2.0.0",
   "runtime": {
     "simc_version": "1210-01",
@@ -20,7 +20,11 @@
     "seed": 12345,
     "max_time_seconds": 20.0,
     "desired_targets": 1,
-    "fight_style": "Patchwerk"
+    "fight_style": "Patchwerk",
+    "target_error": 0.0,
+    "confidence": 0.95,
+    "report_details": null,
+    "report_pets_separately": null
   },
   "primary_metric": {
     "name": "dps",
@@ -40,7 +44,9 @@
       "executes": 7.36,
       "amount_per_fight": 817423.08,
       "metric_per_second": 40871.15,
-      "share": 0.2415
+      "share": 0.2415,
+      "actor": "player",
+      "actor_kind": "player"
     }
   ],
   "buffs": [
@@ -79,5 +85,10 @@
         }
       ]
     }
-  ]
+  ],
+  "timelines": {
+    "damage": null,
+    "resources": [],
+    "buffs": []
+  }
 }

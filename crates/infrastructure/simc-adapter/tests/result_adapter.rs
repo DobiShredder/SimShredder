@@ -61,5 +61,27 @@ fn actual_official_report_normalizes_detailed_sections() {
     assert!(!result.actions.is_empty());
     assert!(!result.buffs.is_empty());
     assert!(!result.apl_sequence.is_empty());
-    assert_eq!(result.schema_version, 2);
+    assert_eq!(result.schema_version, 3);
+    assert!(result.timelines.damage.is_some());
+    assert!(!result.timelines.resources.is_empty());
+    assert!(!result.timelines.buffs.is_empty());
+    assert!(
+        result
+            .timelines
+            .damage
+            .as_ref()
+            .is_some_and(|timeline| timeline.samples.len() <= 360)
+    );
+    let has_pet_statistics = document["sim"]["players"][0]["stats_pets"]
+        .as_object()
+        .is_some_and(|pets| !pets.is_empty());
+    if has_pet_statistics {
+        assert!(
+            result
+                .actions
+                .iter()
+                .any(|action| action.actor_kind
+                    == simshredder_domain::ResultActorKind::PetOrGuardian)
+        );
+    }
 }

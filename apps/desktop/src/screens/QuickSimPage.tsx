@@ -1,21 +1,31 @@
 import { Cpu, Play, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { quickPrepare, quickStart, type JobView, type PreparedQuickSim, type QuickSimRequest } from "../quick";
 import { EntityTooltip, type TooltipModel } from "../tooltips";
+import { PresetControls } from "../components/PresetControls";
+import { saveLastRequest } from "../workflowPreferences";
 
-export function QuickSimPage({ request, preview, onChange, onStarted, onImport }: {
+export function QuickSimPage({ profileId, request, preview, onChange, onStarted, onImport }: {
+  profileId: string | null;
   request: QuickSimRequest | null;
   preview: PreparedQuickSim | null;
   onChange: (request: QuickSimRequest, preview: PreparedQuickSim) => void;
-  onStarted: (job: JobView) => void;
+  onStarted: (job: JobView, request: QuickSimRequest) => void;
   onImport: () => void;
 }) {
   const { t } = useTranslation();
   const [draft, setDraft] = useState(request);
   const [operation, setOperation] = useState<"preview" | "start" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
   useEffect(() => setDraft(request), [request]);
+  useEffect(() => {
+    if (profileId && draft) {
+      try { saveLastRequest(profileId, { kind: "quick", profileId, request: draft }); } catch { /* Keep the in-memory draft usable. */ }
+    }
+  }, [draft, profileId]);
+  useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
 
   if (!draft || !preview) {
     return <div className="page placeholder-page"><p className="eyebrow">{t("quick.eyebrow")}</p><h1>{t("quick.title")}</h1><p className="placeholder-description">{t("quick.importFirst")}</p><button className="primary-button" type="button" onClick={onImport}>{t("quick.goImport")}</button></div>;
@@ -51,14 +61,19 @@ export function QuickSimPage({ request, preview, onChange, onStarted, onImport }
     try {
       const refreshed = await quickPrepare(draft);
       onChange(draft, refreshed);
-      onStarted(await quickStart(draft));
+      onStarted(await quickStart(draft), draft);
     } catch (reason) { setError(String(reason)); } finally { setOperation(null); }
   };
+  const builtIns = [
+    { id: "builtin-single-target", name: t("presets.singleTarget"), summary: t("presets.singleTargetSummary"), request: { ...draft, desiredTargets: 1, fightStyle: "Patchwerk" as const } },
+    { id: "builtin-aoe", name: t("presets.aoe"), summary: t("presets.aoeSummary"), request: { ...draft, desiredTargets: 5, fightStyle: "HecticAddCleave" as const } },
+  ];
 
   return (
-    <div className="page quick-page">
+    <div className="page quick-page" aria-describedby={error ? "quick-validation-error" : undefined}>
       <p className="eyebrow">{t("quick.eyebrow")}</p>
       <h1>{t("quick.title")}</h1>
+      {profileId ? <PresetControls profileId={profileId} kind="quick" request={draft} builtIns={builtIns} onApply={(request) => setDraft(request as QuickSimRequest)} /> : null}
       <div className="profile-strip">
         <div><span>{t("quick.profile")}</span><div className="profile-title-with-tooltip"><strong>{preview.profile.name}</strong>{preview.profile.talents.length ? <EntityTooltip model={talentTooltip} /> : null}</div><small>{preview.profile.class} · {preview.profile.specialization} · {preview.profile.race}</small></div>
         <div><span>{t("quick.equipment")}</span><strong>{t("quick.equipped", { count: preview.profile.equippedItems })}</strong><small>{t("quick.bags", { count: preview.profile.bagItems })}</small></div>
@@ -110,7 +125,7 @@ export function QuickSimPage({ request, preview, onChange, onStarted, onImport }
         </section>
         <section className="generated-panel" aria-labelledby="generated-heading"><h2 id="generated-heading">{t("quick.generated")}</h2><p>{t("quick.generatedHelp")}</p><pre tabIndex={0}>{preview.generatedInput}</pre></section>
       </div>
-      {error ? <div className="inline-error" role="alert"><strong>{t("quick.errorTitle")}</strong><code>{error}</code></div> : null}
+      {error ? <div ref={errorRef} id="quick-validation-error" className="inline-error" role="alert" tabIndex={-1}><strong>{t("quick.errorTitle")}</strong><code>{error}</code></div> : null}
       <div className="button-row quick-actions">
         <button className="secondary-button" disabled={operation !== null} type="button" onClick={() => void refresh()}><RefreshCw aria-hidden="true" size={18} />{operation === "preview" ? t("quick.refreshing") : t("quick.refresh")}</button>
         <button className="primary-button" disabled={operation !== null} type="button" onClick={() => void start()}><Play aria-hidden="true" size={18} />{operation === "start" ? t("quick.starting") : t("quick.run")}</button>

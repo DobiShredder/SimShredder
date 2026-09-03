@@ -16,7 +16,7 @@ import {
 import { useCallback, useEffect, useRef, useState, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import type { SupportedLocale } from "./i18n";
-import { quickDelete, quickJobs as loadQuickJobs, quickRecover, quickRerun, type JobView, type PreparedQuickSim, type QuickSimRequest } from "./quick";
+import { quickDelete, quickJobs as loadQuickJobs, quickPrepare, quickRecover, quickRerun, type JobView, type PreparedQuickSim, type QuickSimRequest } from "./quick";
 import { sameRun, type RunReference } from "./runs";
 import { formatRuntimeDataDate, formatRuntimeError, runtimeCheckUpdates, runtimeInstallLatest, runtimeStatus, type RuntimeView } from "./runtime";
 import { ImportPage } from "./screens/ImportPage";
@@ -28,6 +28,7 @@ import { SettingsPage } from "./screens/SettingsPage";
 import { TopGearPage } from "./screens/TopGearPage";
 import { topGearDelete, topGearRerun, topGearSessions, type TopGearSessionView } from "./topGear";
 import { invoke } from "@tauri-apps/api/core";
+import { hasRunDraft, loadRunDraft, removeRunPreferences, renameRun, runNames, saveLastRequest, saveRunDraft } from "./workflowPreferences";
 
 type Page = "home" | "import" | "quickSim" | "topGear" | "jobs" | "results" | "history" | "settings";
 
@@ -81,6 +82,7 @@ export function App() {
   const [page, setPage] = useState<Page>("home");
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [quickRequest, setQuickRequest] = useState<QuickSimRequest | null>(null);
+  const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreparedQuickSim | null>(null);
   const [jobs, setJobs] = useState<JobView[]>([]);
   const [topGearSessionsState, setTopGearSessionsState] = useState<TopGearSessionView[]>([]);
@@ -92,12 +94,25 @@ export function App() {
   const [runtimeUpdateError, setRuntimeUpdateError] = useState<string | null>(null);
   const [preventSleep, setPreventSleep] = useState(() => storedBoolean(PREVENT_SLEEP_KEY, true));
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => storedBoolean(NOTIFICATIONS_KEY, false));
+  const [customRunNames, setCustomRunNames] = useState<Record<string, string>>(() => runNames());
   const previousStates = useRef(new Map<string, string>());
+  const navigationReady = useRef(false);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.lang = i18n.resolvedLanguage ?? "en";
   }, [i18n.resolvedLanguage, theme]);
+
+  useEffect(() => {
+    if (!navigationReady.current) {
+      navigationReady.current = true;
+      return;
+    }
+    const heading = document.querySelector<HTMLElement>("#main-content h1");
+    if (!heading) return;
+    heading.tabIndex = -1;
+    heading.focus({ preventScroll: true });
+  }, [page]);
 
   useEffect(() => {
     void quickRecover().then(loadQuickJobs).then(setJobs).catch(() => undefined);
@@ -112,6 +127,10 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    // Visual/live E2E injects an exact runtime and validates update discovery
+    // separately. A real nightly lookup would make screenshots depend on
+    // mutable upstream state and can cover the screen with a late prompt.
+    if (import.meta.env.MODE === "wdio") return;
     const today = localDateKey();
     try {
       if (window.localStorage.getItem(RUNTIME_UPDATE_CHECK_DATE_KEY) === today) return;
@@ -144,18 +163,40 @@ export function App() {
     }
     setSelectedRun((current) => sameRun(current, run) ? null : current);
     setSelectedResult((current) => sameRun(current, run) ? null : current);
+    removeRunPreferences(run);
+    setCustomRunNames(runNames());
   }, [topGearSessionsState]);
   const rerun = useCallback(async (run: RunReference) => {
+    const draft = loadRunDraft(run);
     if (run.kind === "quick") {
       const next = await quickRerun(run.jobId);
+      if (draft) saveRunDraft({ kind: "quick", jobId: next.id }, draft);
       updateJob(next);
       openRun({ kind: "quick", jobId: next.id });
     } else {
       const next = await topGearRerun(run.sessionId);
+      if (draft) saveRunDraft({ kind: "topGear", sessionId: next.id }, draft);
       updateTopGearSession(next);
       openRun({ kind: "topGear", sessionId: next.id });
     }
   }, [openRun, updateJob, updateTopGearSession]);
+  const editRerun = useCallback(async (run: RunReference) => {
+    const draft = loadRunDraft(run);
+    if (!draft) throw new Error(t("runs.editUnavailable"));
+    setActiveProfileId(draft.profileId);
+    if (draft.kind === "quick") {
+      const prepared = await quickPrepare(draft.request);
+      setQuickRequest(draft.request); setPreview(prepared); setPage("quickSim");
+    } else {
+      setQuickRequest(draft.request.quick);
+      if (draft.profileId) saveLastRequest(draft.profileId, draft);
+      setPage("topGear");
+    }
+  }, [t]);
+  const changeRunName = useCallback((run: RunReference, name: string | null) => {
+    renameRun(run, name);
+    setCustomRunNames(runNames());
+  }, []);
 
   const changeLocale = (locale: SupportedLocale) => {
     void i18n.changeLanguage(locale);
@@ -291,17 +332,17 @@ export function App() {
           {page === "home" ? (
             <HomePage navigate={setPage} runtime={runtime} />
           ) : page === "import" ? (
-            <ImportPage onPrepared={(request, prepared) => { setQuickRequest(request); setPreview(prepared); setPage("quickSim"); }} />
+            <ImportPage onPrepared={(request, prepared, profileId) => { setActiveProfileId(profileId); setQuickRequest(request); setPreview(prepared); setPage("quickSim"); }} />
           ) : page === "quickSim" ? (
-            <QuickSimPage request={quickRequest} preview={preview} onChange={(request, prepared) => { setQuickRequest(request); setPreview(prepared); }} onStarted={(next) => { updateJob(next); (next.state === "succeeded" ? openResult : openRun)({ kind: "quick", jobId: next.id }); }} onImport={() => setPage("import")} />
+            <QuickSimPage profileId={activeProfileId} request={quickRequest} preview={preview} onChange={(request, prepared) => { setQuickRequest(request); setPreview(prepared); }} onStarted={(next, request) => { const run = { kind: "quick" as const, jobId: next.id }; saveRunDraft(run, { kind: "quick", profileId: activeProfileId, request }); updateJob(next); (next.state === "succeeded" ? openResult : openRun)(run); }} onImport={() => setPage("import")} />
           ) : page === "topGear" ? (
-            <TopGearPage quick={quickRequest} onStarted={(next) => { updateTopGearSession(next); openRun({ kind: "topGear", sessionId: next.id }); }} onImport={() => setPage("import")} />
+            <TopGearPage profileId={activeProfileId} quick={quickRequest} onStarted={(next, request) => { const run = { kind: "topGear" as const, sessionId: next.id }; saveRunDraft(run, { kind: "topGear", profileId: activeProfileId, request }); updateTopGearSession(next); openRun(run); }} onImport={() => setPage("import")} />
           ) : page === "jobs" ? (
-            <JobsPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} selected={selectedRun} onSelect={setSelectedRun} onQuickJob={updateJob} onTopGearSession={updateTopGearSession} onResult={openResult} />
+            <JobsPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} selected={selectedRun} runNames={customRunNames} onSelect={setSelectedRun} onQuickJob={updateJob} onTopGearSession={updateTopGearSession} onResult={openResult} />
           ) : page === "results" ? (
-            <ResultsPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} selected={selectedResult} onSelect={setSelectedResult} onRerun={rerun} />
+            <ResultsPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} selected={selectedResult} runNames={customRunNames} onSelect={setSelectedResult} onRerun={rerun} onEditRerun={editRerun} onRename={changeRunName} canEditRun={hasRunDraft} />
           ) : page === "history" ? (
-            <HistoryPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} onOpenRun={openRun} onOpenResult={openResult} onDelete={deleteRun} onRerun={rerun} />
+            <HistoryPage quickJobs={quickRuns} topGearSessions={topGearSessionsState} runNames={customRunNames} onOpenRun={openRun} onOpenResult={openResult} onDelete={deleteRun} onRerun={rerun} onEditRerun={editRerun} onRename={changeRunName} canEditRun={hasRunDraft} />
           ) : page === "settings" ? (
             <SettingsPage initialRuntime={runtime} onRuntimeChange={setRuntime} preventSleep={preventSleep} notificationsEnabled={notificationsEnabled} onPreventSleepChange={(enabled) => { storeBoolean(PREVENT_SLEEP_KEY, enabled); setPreventSleep(enabled); }} onNotificationsChange={(enabled) => { storeBoolean(NOTIFICATIONS_KEY, enabled); setNotificationsEnabled(enabled); if (enabled && "Notification" in window && Notification.permission === "default") void Notification.requestPermission(); }} />
           ) : (

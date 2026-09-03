@@ -16,7 +16,7 @@ vi.mock("echarts/core", () => ({
   use: vi.fn(),
   init: () => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() }),
 }));
-vi.mock("echarts/charts", () => ({ BarChart: {} }));
+vi.mock("echarts/charts", () => ({ BarChart: {}, LineChart: {} }));
 vi.mock("echarts/components", () => ({ GridComponent: {}, TooltipComponent: {} }));
 vi.mock("echarts/renderers", () => ({ CanvasRenderer: {} }));
 
@@ -176,16 +176,20 @@ const topGearResultFixture = {
 const quickResultFixture = {
   jobId: 7,
   result: {
-    schema_version: 2,
+    schema_version: 3,
     report_version: "2.0.0",
     runtime: { simc_version: "1210-01", git_revision: "3487fce", game_version: "12.1.0.69465", game_build: 69465, channel: "live" },
     player: { name: "Core", race: "Orc", role: "attack", specialization: "Fury" },
     options: { iterations: 10000, threads: 4, seed: 1, max_time_seconds: 300, desired_targets: 1, fight_style: "Patchwerk" },
     primary_metric: { name: "DPS", mean: 123456.7, mean_error: 120.2, standard_deviation: 500, minimum: 120000, maximum: 126000, median: 123400 },
-    actions: [{ id: 184367, name: "Rampage", internal_name: "rampage", school: "physical", executes: 24.5, amount_per_fight: 1234567, metric_per_second: 45678.9, share: 0.37 }],
+    actions: [
+      { id: 184367, name: "Rampage", internal_name: "rampage", school: "physical", executes: 24.5, amount_per_fight: 1234567, metric_per_second: 45678.9, share: 0.37, actor: "player", actor_kind: "player" },
+      { id: 123, name: "Bite", internal_name: "bite", school: "physical", executes: 10, amount_per_fight: 200000, metric_per_second: 5000, share: 0.04, actor: "Wolf", actor_kind: "pet_or_guardian" },
+    ],
     buffs: [{ id: 184362, name: "Enrage", internal_name: "enrage", uptime_percent: 82.4, benefit_percent: 91.2, starts: 18 }],
     resources: [{ name: "rage", spent_per_fight: 1200, overflow_per_fight: 18, remaining_per_fight: 22 }],
     apl_sequence: [{ time_seconds: 1.25, id: 184367, name: "Rampage", internal_name: "rampage", target: "Fluffy Pillow", resources: { rage: 80 }, resource_max: { rage: 100 }, buffs: [{ id: 184362, name: "Enrage", internal_name: "enrage", stacks: 2 }] }],
+    timelines: { damage: { name: "damage", unit: "per_second", mean: 123456.7, minimum: 100000, maximum: 150000, samples: [100000, 123456.7, 150000], source_sample_count: 3 }, resources: [{ name: "rage", unit: "amount", mean: 60, minimum: 0, maximum: 100, samples: [0, 60, 100], source_sample_count: 3 }], buffs: [{ name: "Enrage", unit: "average_stacks", mean: 0.82, minimum: 0, maximum: 1, samples: [0, 1, 0.82], source_sample_count: 3 }] },
   },
   generatedInput: prepared.generatedInput,
   rawJson: "{\"sim\":{}}",
@@ -406,10 +410,19 @@ describe("application shell", () => {
     await screen.findByRole("heading", { name: "Review simulation input" });
     await user.click(screen.getByRole("button", { name: "Profile" }));
 
-    await user.click(await screen.findByRole("button", { name: "Delete profile" }));
-    const dialog = screen.getByRole("dialog", { name: "Delete Core?" });
+    const deleteTrigger = await screen.findByRole("button", { name: "Delete profile" });
+    deleteTrigger.focus();
+    await user.click(deleteTrigger);
+    let dialog = screen.getByRole("dialog", { name: "Delete Core?" });
     expect(dialog).toHaveTextContent("Simulation history, results, and exported files are kept.");
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
     await expectNoAutomatedAccessibilityViolations();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(deleteTrigger).toHaveFocus();
+
+    await user.click(deleteTrigger);
+    dialog = screen.getByRole("dialog", { name: "Delete Core?" });
     await user.click(within(dialog).getByRole("button", { name: "Delete profile" }));
 
     expect(mockInvoke).toHaveBeenCalledWith("character_profile_delete", { profileId: "a".repeat(32) });
@@ -669,10 +682,19 @@ describe("application shell", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(talentDetails).toHaveFocus();
     await user.click(screen.getByRole("button", { name: "Start analysis" }));
-    expect(await screen.findByText("123,456.7")).toBeVisible();
+    expect((await screen.findAllByText("123,456.7"))[0]).toBeVisible();
     expect(screen.getByRole("button", { name: /Core · fury/ })).toHaveTextContent("Succeeded");
     await expectNoAutomatedAccessibilityViolations();
     expect(screen.getByRole("heading", { name: "Damage and healing breakdown" })).toBeVisible();
+    const damageSection = screen.getByRole("heading", { name: "Damage and healing breakdown" }).closest("section")!;
+    await user.selectOptions(screen.getByRole("combobox", { name: "Actor" }), "Wolf");
+    expect(within(damageSection).getByRole("rowheader", { name: /Bite/ })).toBeVisible();
+    expect(within(damageSection).queryByRole("rowheader", { name: /Rampage/ })).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Actor" }), "all");
+    expect(screen.getByRole("heading", { name: "DPS distribution summary" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Run timelines" })).toBeVisible();
+    expect(screen.getByText(/Individual iteration samples are not present/)).toBeVisible();
+    expect(screen.getByText("Cooldown timeline unavailable")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Resources" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Buffs" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Sample action sequence" })).toBeVisible();
@@ -680,6 +702,10 @@ describe("application shell", () => {
     expect(screen.getByLabelText("2 stacks")).toBeVisible();
     expect(screen.getAllByRole("button", { name: "Show details for Rampage" })).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: "Show details for Enrage" })).toHaveLength(2);
+    await user.click(screen.getByRole("button", { name: "View snapshot" }));
+    expect(screen.getByRole("heading", { name: "Rampage snapshot" })).toBeVisible();
+    await user.type(screen.getByRole("textbox", { name: "Find an action, target, resource, or buff" }), "missing");
+    expect(screen.getByText(/0 matching actions/)).toBeVisible();
     await expectNoAutomatedAccessibilityViolations();
     await user.click(screen.getByRole("tab", { name: "Raw HTML" }));
     expect(screen.getByText(/HTML is shown as source text/)).toBeVisible();
@@ -687,6 +713,32 @@ describe("application shell", () => {
     await user.click(screen.getByRole("button", { name: "Export verified artifacts" }));
     expect(await screen.findByText(/Exported 5 files/)).toBeVisible();
     expect(mockInvoke).toHaveBeenCalledWith("quick_start", expect.objectContaining({ request: expect.objectContaining({ source: "warrior=Core" }) }));
+  });
+
+  it("saves a profile preset, renames the run, and opens an immutable copy for editing", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Profile" }));
+    await user.type(screen.getByRole("textbox", { name: "Profile source" }), "warrior=Core");
+    await user.click(screen.getByRole("button", { name: "Review profile" }));
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Preset" }), "builtin-aoe");
+    expect(screen.getByRole("spinbutton", { name: "Targets" })).toHaveValue(5);
+    await user.type(screen.getByRole("textbox", { name: "Preset name" }), "Progression AoE");
+    await user.click(screen.getByRole("button", { name: "Save preset" }));
+    expect(screen.getByRole("combobox", { name: "Preset" })).toHaveTextContent("Progression AoE");
+
+    await user.click(screen.getByRole("button", { name: "Start analysis" }));
+    expect(await screen.findByRole("heading", { name: "Core · Fury" })).toBeVisible();
+    const runName = screen.getByRole("textbox", { name: "Run name" });
+    await user.clear(runName);
+    await user.type(runName, "Weekly AoE check");
+    await user.click(screen.getByRole("button", { name: "Save name" }));
+    expect(screen.getByRole("button", { name: /Weekly AoE check/ })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Duplicate and edit" }));
+    expect(await screen.findByRole("heading", { name: "Review simulation input" })).toBeVisible();
+    expect(screen.getByRole("spinbutton", { name: "Targets" })).toHaveValue(5);
   });
 
   it("previews the bilingual gear optimizer with virtual augmentation controls", async () => {
@@ -780,7 +832,7 @@ describe("application shell", () => {
     expect(screen.getByText("Equip Candidate Helm")).toBeVisible();
     expect(screen.getAllByText("Crests", { selector: ".currency-name" }).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Copy final .simc input" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Run again with the same input and settings" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Run exact settings again" })).toBeVisible();
     expect(screen.getByText("+500")).toBeVisible();
     expect(screen.getByRole("combobox", { name: "Result filter" })).toBeVisible();
     expect(screen.getByRole("combobox", { name: "Sort by" })).toBeVisible();
@@ -795,7 +847,7 @@ describe("application shell", () => {
     await expectNoAutomatedAccessibilityViolations();
     await user.click(screen.getByRole("button", { name: "Export verified Gear Optimizer artifacts" }));
     expect(await screen.findByText(/Exported 5 files/)).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Run again with the same input and settings" }));
+    await user.click(screen.getByRole("button", { name: "Run exact settings again" }));
     expect(mockInvoke).toHaveBeenCalledWith("top_gear_rerun", { sessionId: "tg-test" });
   });
 
@@ -846,7 +898,7 @@ describe("application shell", () => {
     await user.type(screen.getByRole("textbox", { name: /Search/ }), "Core");
     expect(screen.getByText(/Job #7/)).toBeVisible();
     expect(screen.queryByText(/Job #8/)).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Run again" }));
+    await user.click(screen.getByRole("button", { name: "Run exact settings again" }));
 
     expect(mockInvoke).toHaveBeenCalledWith("quick_rerun", { jobId: 7 });
     expect(await screen.findByRole("heading", { name: "Job status" })).toBeVisible();

@@ -6,6 +6,7 @@ export type RunType = "characterAnalysis" | "gearOptimizer";
 
 export type RunCatalogEntry = {
   key: string;
+  displayName: string;
   run: RunReference;
   type: RunType;
   state: string;
@@ -23,12 +24,12 @@ const active = (state: string) => state === "queued" || state === "running";
 const recoverable = (state: string) => state === "failed" || state === "canceled" || state === "interrupted";
 const terminal = (state: string) => !active(state);
 
-export function buildRunCatalog(quickJobs: JobView[], topGearSessions: TopGearSessionView[]) {
+export function buildRunCatalog(quickJobs: JobView[], topGearSessions: TopGearSessionView[], names: Record<string, string> = {}) {
   const entries: RunCatalogEntry[] = [
     ...topGearSessions.map((session) => {
       const run = { kind: "topGear", sessionId: session.id } as const;
       return {
-        key: runKey(run), run, type: "gearOptimizer" as const,
+        key: runKey(run), displayName: names[runKey(run)] ?? `${session.currentJob.profile.name} · ${session.currentJob.profile.specialization}`, run, type: "gearOptimizer" as const,
         state: session.stage === "complete" ? "succeeded" : session.pipelineFailure ? "failed" : session.currentJob.state === "succeeded" ? "running" : session.currentJob.state,
         characterName: session.currentJob.profile.name,
         specialization: session.currentJob.profile.specialization,
@@ -43,7 +44,7 @@ export function buildRunCatalog(quickJobs: JobView[], topGearSessions: TopGearSe
     ...quickJobs.map((job) => {
       const run = { kind: "quick", jobId: job.id } as const;
       return {
-        key: runKey(run), run, type: "characterAnalysis" as const, state: job.state,
+        key: runKey(run), displayName: names[runKey(run)] ?? `${job.profile.name} · ${job.profile.specialization}`, run, type: "characterAnalysis" as const, state: job.state,
         characterName: job.profile.name, specialization: job.profile.specialization,
         createdUnixMillis: job.createdUnixMillis, updatedUnixMillis: job.updatedUnixMillis,
         cpuPreset: job.cpuPreset, settings: job.settings, job, session: null,

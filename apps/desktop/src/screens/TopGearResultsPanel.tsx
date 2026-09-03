@@ -1,4 +1,4 @@
-import { Clipboard, Download, RotateCw } from "lucide-react";
+import { Clipboard, Download } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { EntityTooltip, itemTooltipModel } from "../tooltips";
@@ -7,7 +7,7 @@ import { topGearExport, type GearSlot, type ItemVariant, type RankedLoadout, typ
 const slotOrder: GearSlot[] = ["head", "neck", "shoulders", "back", "chest", "wrists", "hands", "waist", "legs", "feet", "finger1", "finger2", "trinket1", "trinket2", "main_hand", "off_hand", "shirt", "tabard"];
 const totalCost = (entry: RankedLoadout) => Object.values(entry.loadout.cost).reduce((sum, amount) => sum + amount, 0);
 
-export function TopGearResultsPanel({ result, picker, onRerun }: { result: TopGearResultView; picker: ReactNode; onRerun: () => Promise<void> }) {
+export function TopGearResultsPanel({ result, picker }: { result: TopGearResultView; picker: ReactNode }) {
   const { t, i18n } = useTranslation();
   const [filter, setFilter] = useState<"all" | "pareto" | "changed">("all");
   const [sort, setSort] = useState<"rank" | "delta" | "cost">("rank");
@@ -16,7 +16,6 @@ export function TopGearResultsPanel({ result, picker, onRerun }: { result: TopGe
   const [exported, setExported] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [rerunning, setRerunning] = useState(false);
   useEffect(() => setReferenceKey(result.baselineKey), [result.baselineKey, result.sessionId]);
 
   const visible = useMemo(() => [...result.ranked]
@@ -81,7 +80,7 @@ export function TopGearResultsPanel({ result, picker, onRerun }: { result: TopGe
       return <tr className={selected ? "ranking-row-selected" : undefined} key={entry.loadout.key} onClick={() => setReferenceKey(entry.loadout.key)}><td><button className="rank-reference-button" aria-label={t("topGear.useAsReference", { rank: entry.rank })} aria-pressed={selected} type="button" onClick={() => setReferenceKey(entry.loadout.key)}>{entry.rank}</button></td><td>{number(entry.mean)}</td><td>{signed(comparison.delta)}</td><td>{signed(comparison.percent)}%</td><td>±{number(comparison.combinedError)}</td><td><span className="currency-inline">{currencyList(entry.loadout.cost)}</span>{!Object.values(entry.loadout.cost).some(Boolean) ? "—" : null}</td><td>{[selected ? t("topGear.reference") : "", comparison.equivalent && !selected ? t("topGear.equivalent") : "", entry.paretoOptimal ? t("topGear.pareto") : ""].filter(Boolean).join(" · ")}</td></tr>;
     })}</tbody></table></div></section>
     {result.actionPlan.length ? <section className="top-gear-results"><h2>{t("topGear.actionPlan")}</h2><ol className="action-plan">{result.actionPlan.map((action) => <li key={action.id}><strong>{action.label}</strong><span>{t("topGear.marginal", { gain: number(action.marginalGain), cumulative: number(action.cumulativeGain) })}</span><small>{t("topGear.remainingLabel")} <span className="currency-inline">{currencyList(action.remaining)}</span></small></li>)}</ol></section> : null}
-    <section className="generated-panel top-gear-final"><h2>{t("topGear.finalInput")}</h2><p>{t("topGear.identity", { simc: result.runtime.simc_version, revision: result.runtime.git_revision, build: result.runtime.game_build, rule: result.ruleRevision })}</p><p>{t("topGear.snapshot", { time: new Date(result.budget.confirmedAtUnixSeconds * 1000).toLocaleString(i18n.language) })}</p><pre tabIndex={0}>{result.finalGeneratedInput}</pre><div className="button-row"><button className="secondary-button" type="button" onClick={() => { setCopied(false); setError(null); void navigator.clipboard.writeText(result.finalGeneratedInput).then(() => setCopied(true)).catch((reason) => setError(String(reason))); }}><Clipboard aria-hidden="true" size={18} />{t("topGear.copyFinalInput")}</button><button className="secondary-button" disabled={exporting} type="button" onClick={() => { setExporting(true); setError(null); void topGearExport(result.sessionId).then((value) => setExported(t("topGear.exported", { count: value.fileCount, path: value.directory }))).catch((reason) => setError(String(reason))).finally(() => setExporting(false)); }}><Download aria-hidden="true" size={18} />{t("topGear.export")}</button><button className="secondary-button" disabled={rerunning} type="button" onClick={() => { setRerunning(true); setError(null); void onRerun().catch((reason) => setError(String(reason))).finally(() => setRerunning(false)); }}><RotateCw aria-hidden="true" size={18} />{t("topGear.rerunExact")}</button></div>{copied ? <p role="status">{t("topGear.copied")}</p> : null}{exported ? <p role="status">{exported}</p> : null}{error ? <div className="inline-error" role="alert"><code>{error}</code></div> : null}</section>
+    <section className="generated-panel top-gear-final"><h2>{t("topGear.finalInput")}</h2><p>{t("topGear.identity", { simc: result.runtime.simc_version, revision: result.runtime.git_revision, build: result.runtime.game_build, rule: result.ruleRevision })}</p><p>{t("topGear.snapshot", { time: new Date(result.budget.confirmedAtUnixSeconds * 1000).toLocaleString(i18n.language) })}</p><pre tabIndex={0}>{result.finalGeneratedInput}</pre><div className="button-row"><button className="secondary-button" type="button" onClick={() => { setCopied(false); setError(null); void navigator.clipboard.writeText(result.finalGeneratedInput).then(() => setCopied(true)).catch((reason) => setError(String(reason))); }}><Clipboard aria-hidden="true" size={18} />{t("topGear.copyFinalInput")}</button><button className="secondary-button" disabled={exporting} type="button" onClick={() => { setExporting(true); setError(null); void topGearExport(result.sessionId).then((value) => setExported(t("topGear.exported", { count: value.fileCount, path: value.directory }))).catch((reason) => setError(String(reason))).finally(() => setExporting(false)); }}><Download aria-hidden="true" size={18} />{t("topGear.export")}</button></div>{copied ? <p role="status">{t("topGear.copied")}</p> : null}{exported ? <p role="status">{exported}</p> : null}{error ? <div className="inline-error" role="alert"><code>{error}</code></div> : null}</section>
   </div>;
 }
 

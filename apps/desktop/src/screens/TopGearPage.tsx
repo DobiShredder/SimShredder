@@ -1,8 +1,10 @@
 import { Gem, Hammer, Lock, Play, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Unlock } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { QuickSimRequest } from "../quick";
 import { EntityTooltip, itemTooltipModel } from "../tooltips";
+import { PresetControls } from "../components/PresetControls";
+import { loadLastRequest, saveLastRequest } from "../workflowPreferences";
 import {
   defaultTopGearRequest,
   topGearPrepare,
@@ -69,13 +71,20 @@ const candidateOrigin = (variant: ItemVariant) => variant.key.startsWith("worn-"
       ? "virtual"
       : "manual";
 
-export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimRequest | null; onStarted: (session: TopGearSessionView) => void; onImport: () => void }) {
+const initialTopGearRequest = (profileId: string | null, quick: QuickSimRequest | null) => {
+  if (!quick) return null;
+  const stored = profileId ? loadLastRequest(profileId, "topGear") : null;
+  return stored ? { ...stored, quick: { ...stored.quick, source: quick.source, format: quick.format } } : defaultTopGearRequest(quick);
+};
+
+export function TopGearPage({ profileId, quick, onStarted, onImport }: { profileId: string | null; quick: QuickSimRequest | null; onStarted: (session: TopGearSessionView, request: TopGearRequest) => void; onImport: () => void }) {
   const { t } = useTranslation();
-  const [request, setRequest] = useState<TopGearRequest | null>(() => quick ? defaultTopGearRequest(quick) : null);
+  const [request, setRequest] = useState<TopGearRequest | null>(() => initialTopGearRequest(profileId, quick));
   const [preview, setPreview] = useState<PreparedTopGear | null>(null);
   const [draft, setDraft] = useState<VariantDraft>(emptyVariant);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
   const [setName, setSetName] = useState("");
   const [setMinimum, setSetMinimum] = useState(2);
   const [optionKind, setOptionKind] = useState("food");
@@ -137,8 +146,16 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
 
   useEffect(() => {
     if (!quick) return;
-    setRequest((current) => current?.quick.source === quick.source ? current : defaultTopGearRequest(quick));
-  }, [quick]);
+    setRequest(initialTopGearRequest(profileId, quick));
+    setPreview(null);
+  }, [profileId, quick]);
+
+  useEffect(() => {
+    if (profileId && request) {
+      try { saveLastRequest(profileId, { kind: "topGear", profileId, request }); } catch { /* Keep the in-memory draft usable. */ }
+    }
+  }, [profileId, request]);
+  useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
 
   useEffect(() => {
     if (!request || preview || busy) return;
@@ -272,7 +289,7 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
       const next = await topGearPrepare(request);
       setPreview(next);
       const started = await topGearStart(request);
-      onStarted(started);
+      onStarted(started, request);
     } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
   };
   const addVariant = () => {
@@ -329,11 +346,16 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
     setPreview(null);
     setDraft({ ...emptyVariant, baseKey: base.key });
   };
+  const builtIns = [
+    { id: "builtin-single-target", name: t("presets.singleTarget"), summary: t("presets.singleTargetSummary"), request: { ...request, quick: { ...request.quick, desiredTargets: 1, fightStyle: "Patchwerk" as const } } },
+    { id: "builtin-aoe", name: t("presets.aoe"), summary: t("presets.aoeSummary"), request: { ...request, quick: { ...request.quick, desiredTargets: 5, fightStyle: "HecticAddCleave" as const } } },
+  ];
   return (
-    <div className="page top-gear-page">
+    <div className="page top-gear-page" aria-describedby={error ? "top-gear-validation-error" : undefined}>
       <p className="eyebrow">{t("topGear.eyebrow")}</p>
       <h1>{t("topGear.title")}</h1>
       <p className="settings-lead">{t("topGear.body")}</p>
+      {profileId ? <PresetControls profileId={profileId} kind="topGear" request={request} builtIns={builtIns} onApply={(value) => { setRequest(value as TopGearRequest); setPreview(null); }} /> : null}
 
       <nav className="optimizer-nav" aria-label={t("topGear.quickNav")}>
         <a href="#optimizer-gear">{t("topGear.navGear")}</a><a href="#optimizer-enhancements">{t("topGear.navEnhancements")}</a><a href="#optimizer-consumables">{t("topGear.navConsumables")}</a><a href="#optimizer-omnium">{t("topGear.navOmnium")}</a><a href="#optimizer-talents">{t("topGear.navTalents")}</a><a href="#optimizer-options">{t("topGear.navOptions")}</a>
@@ -480,7 +502,7 @@ export function TopGearPage({ quick, onStarted, onImport }: { quick: QuickSimReq
 
       {preview ? <section className="preview-card" aria-live="polite"><h2>{t("topGear.preview")}</h2><div className="metric-grid"><article><span>{t("topGear.raw")}</span><strong>{preview.rawCombinations}</strong></article><article><span>{t("topGear.valid")}</span><strong>{preview.validCombinations}</strong></article><article><span>{t("topGear.executions")}</span><strong>{t("topGear.executionUpperBound", { count: preview.executionCount })}</strong></article><article><span>{t("topGear.workload")}</span><strong>{t(`topGear.workload_${preview.validCombinations <= 64 ? "small" : preview.validCombinations <= 512 ? "medium" : "large"}`)}</strong><small>{t("topGear.safeLimit", { limit: request.combinationLimit })}</small></article></div><div className="stage-count-grid"><article><span>{t("topGear.lowStage")}</span><strong>{preview.validCombinations}</strong><small>{t("topGear.exactCandidates")}</small></article><article><span>{t("topGear.mediumStage")}</span><strong>≤ {preview.validCombinations}</strong><small>{t("topGear.survivorBound")}</small></article><article><span>{t("topGear.highStage")}</span><strong>≤ {preview.validCombinations}</strong><small>{t("topGear.survivorBound")}</small></article></div><div className="workload-advice"><h3>{t("topGear.reduceWorkload")}</h3><p>{t("topGear.workloadSummary", { count: preview.validCombinations, limit: request.combinationLimit })}</p><div className="button-row"><button className="secondary-button" disabled={request.combinationLimit <= 256} type="button" onClick={() => { setRequest({ ...request, combinationLimit: 256 }); setPreview(null); }}>{t("topGear.applySafeLimit", { current: preview.validCombinations, reduced: Math.min(preview.validCombinations, 256) })}</button>{largestReduciblePool ? <button className="secondary-button" type="button" onClick={() => toggleSlotLock(largestReduciblePool.slot)}>{t("topGear.applySlotLockReduction", { slot: t(`topGear.slot_${largestReduciblePool.slot}`), current: preview.validCombinations, reduced: Math.ceil(preview.validCombinations / largestReduciblePool.factor) })}</button> : null}<button className="secondary-button" disabled={optionalAxisFactor <= 1} type="button" onClick={keepOnlyBaselineOptions}>{t("topGear.applyOptionalAxisReduction", { current: preview.validCombinations, reduced: Math.ceil(preview.validCombinations / optionalAxisFactor) })}</button></div><small>{t("topGear.reductionConsent")}</small></div><details className="rejection-details"><summary>{t("topGear.rejections")}</summary><ul>{Object.entries(preview.rejections).map(([reason, count]) => <li key={reason}><span>{t(`topGear.rejection_${reason}`)}</span><strong>{count}</strong></li>)}</ul></details>{preview.estimated ? <p className="status-warning"><span aria-hidden="true" />{t("topGear.estimated")}</p> : null}<p className="safe-note">{preview.ruleSource}</p></section> : null}
 
-      {error ? <div className="inline-error" role="alert"><strong>{t("topGear.errorTitle")}</strong><code>{error}</code></div> : null}
+      {error ? <div ref={errorRef} id="top-gear-validation-error" className="inline-error" role="alert" tabIndex={-1}><strong>{t("topGear.errorTitle")}</strong><code>{error}</code></div> : null}
       <div className="button-row quick-actions"><button className="secondary-button" disabled={busy} type="button" onClick={() => void refresh()}><RefreshCw aria-hidden="true" size={18} />{busy ? t("quick.refreshing") : t("quick.refresh")}</button><button className="primary-button" disabled={busy || !preview} type="button" onClick={() => void start()}><Play aria-hidden="true" size={18} />{busy ? t("quick.starting") : t("topGear.run")}</button></div>
     </div>
   );
